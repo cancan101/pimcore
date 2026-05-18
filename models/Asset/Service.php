@@ -17,6 +17,7 @@ declare(strict_types=1);
 namespace Pimcore\Model\Asset;
 
 use Exception;
+use League\Flysystem\UnableToReadFile;
 use Pimcore;
 use Pimcore\Config;
 use Pimcore\Event\AssetEvents;
@@ -566,10 +567,15 @@ class Service extends Model\Element\Service
             $storagePath = preg_replace('/^' . preg_quote($prefix, '/') . '/', '', $storagePath);
         }
 
-        // thumbnail urls are at least 10 characters long
-        if (strlen($uri) > 10 && $storage->fileExists($storagePath)) {
+        // Attempt to stream the cached thumbnail directly. On remote storage adapters (e.g. S3),
+        // this avoids the extra HEAD request that a preceding fileExists() check would issue.
+        try {
             $stream = $storage->readStream($storagePath);
+        } catch (UnableToReadFile) {
+            $stream = null;
+        }
 
+        if ($stream !== null) {
             $lifetime = 86400 * 7; // 1 week lifetime, same as direct delivery in .htaccess
 
             return new StreamedResponse(function () use ($stream) {
@@ -580,11 +586,11 @@ class Service extends Model\Element\Service
                 'Content-Type' => $storage->mimeType($storagePath),
                 'Content-Length' => $storage->fileSize($storagePath),
             ]);
-        } else {
-            $thumbnail = Asset\Service::getImageThumbnailByArrayConfig($config);
-            if ($thumbnail) {
-                return Asset\Service::getStreamedResponseFromImageThumbnail($thumbnail, $config);
-            }
+        }
+
+        $thumbnail = Asset\Service::getImageThumbnailByArrayConfig($config);
+        if ($thumbnail) {
+            return Asset\Service::getStreamedResponseFromImageThumbnail($thumbnail, $config);
         }
 
         return null;
