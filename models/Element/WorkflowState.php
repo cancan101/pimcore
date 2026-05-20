@@ -33,6 +33,8 @@ class WorkflowState extends Model\AbstractModel
 
     protected string $place;
 
+    protected ?string $publishedPlace = null;
+
     public static function getByPrimary(int $cid, string $ctype, string $workflow): ?WorkflowState
     {
         try {
@@ -93,6 +95,21 @@ class WorkflowState extends Model\AbstractModel
     public function getWorkflow(): string
     {
         return $this->workflow;
+    }
+
+    public function getPublishedPlace(): ?string
+    {
+        return $this->publishedPlace;
+    }
+
+    /**
+     * @return $this
+     */
+    public function setPublishedPlace(?string $publishedPlace): static
+    {
+        $this->publishedPlace = $publishedPlace;
+
+        return $this;
     }
 
     /**

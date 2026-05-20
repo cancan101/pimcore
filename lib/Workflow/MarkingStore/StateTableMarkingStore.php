@@ -27,9 +27,17 @@ class StateTableMarkingStore implements MarkingStoreInterface
 {
     private string $workflowName;
 
-    public function __construct(string $workflowName)
+    private bool $versioning;
+
+    public function __construct(string $workflowName, bool $versioning = false)
     {
         $this->workflowName = $workflowName;
+        $this->versioning = $versioning;
+    }
+
+    public function isVersioning(): bool
+    {
+        return $this->versioning;
     }
 
     public function getMarking(object $subject): Marking

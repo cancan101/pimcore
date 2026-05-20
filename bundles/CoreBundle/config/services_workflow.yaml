@@ -63,6 +63,11 @@ services:
     Pimcore\Workflow\EventSubscriber\NotesSubscriber: ~
 
     Pimcore\Workflow\EventSubscriber\ChangePublishedStateSubscriber: ~
+
+    Pimcore\Workflow\EventSubscriber\PublishedStateBaselineSubscriber:
+        arguments:
+            $db: '@doctrine.dbal.default_connection'
+
     pimcore.workflow.place-options-provider:
         class: Pimcore\Workflow\Place\OptionsProvider
         public: true
