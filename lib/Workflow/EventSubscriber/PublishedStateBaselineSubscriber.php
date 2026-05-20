@@ -16,7 +16,6 @@ declare(strict_types=1);
 
 namespace Pimcore\Workflow\EventSubscriber;
 
-use Doctrine\DBAL\Connection;
 use Pimcore\Event\AssetEvents;
 use Pimcore\Event\DataObjectEvents;
 use Pimcore\Event\DocumentEvents;
@@ -25,6 +24,7 @@ use Pimcore\Event\Model\VersionEvent;
 use Pimcore\Event\VersionEvents;
 use Pimcore\Model\Element\ElementInterface;
 use Pimcore\Model\Element\Service;
+use Pimcore\Model\Element\WorkflowState;
 use Pimcore\Workflow\Manager;
 use Pimcore\Workflow\MarkingStore\StateTableMarkingStore;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -39,11 +39,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  */
 class PublishedStateBaselineSubscriber implements EventSubscriberInterface
 {
-    private const TABLE = 'element_workflow_state';
-
     public function __construct(
         private Manager $workflowManager,
-        private Connection $db,
     ) {
     }
 
@@ -113,43 +110,43 @@ class PublishedStateBaselineSubscriber implements EventSubscriberInterface
 
     private function captureBaseline(ElementInterface $element, string $workflowName): void
     {
-        $this->db->executeStatement(
-            'UPDATE ' . self::TABLE . ' SET publishedPlace = place WHERE cid = ? AND ctype = ? AND workflow = ?',
-            [$element->getId(), Service::getElementType($element), $workflowName]
+        $workflowState = WorkflowState::getByPrimary(
+            $element->getId(),
+            Service::getElementType($element),
+            $workflowName
         );
+
+        if (!$workflowState) {
+            return;
+        }
+
+        $workflowState->setPublishedPlace($workflowState->getPlace());
+        $workflowState->save();
     }
 
     private function restoreFromBaseline(ElementInterface $element, string $workflowName): void
     {
-        $cid = $element->getId();
-        $ctype = Service::getElementType($element);
-
-        $publishedPlace = $this->db->fetchOne(
-            'SELECT publishedPlace FROM ' . self::TABLE . ' WHERE cid = ? AND ctype = ? AND workflow = ?',
-            [$cid, $ctype, $workflowName]
+        $workflowState = WorkflowState::getByPrimary(
+            $element->getId(),
+            Service::getElementType($element),
+            $workflowName
         );
 
-        if ($publishedPlace === false) {
-            // No row exists for this element/workflow, nothing to restore.
+        if (!$workflowState) {
             return;
         }
 
+        $publishedPlace = $workflowState->getPublishedPlace();
         if ($publishedPlace === null || $publishedPlace === '') {
             // No baseline has been captured yet (the element was never published
             // with a marking). Remove the in-flight marking so the element
             // leaves the workflow, matching the object marking store behaviour.
-            $this->db->delete(self::TABLE, [
-                'cid' => $cid,
-                'ctype' => $ctype,
-                'workflow' => $workflowName,
-            ]);
+            $workflowState->delete();
 
             return;
         }
 
-        $this->db->executeStatement(
-            'UPDATE ' . self::TABLE . ' SET place = publishedPlace WHERE cid = ? AND ctype = ? AND workflow = ?',
-            [$cid, $ctype, $workflowName]
-        );
+        $workflowState->setPlace($publishedPlace);
+        $workflowState->save();
     }
 }
