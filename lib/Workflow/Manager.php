@@ -223,19 +223,32 @@ class Manager
     ): Marking {
         $this->notesSubscriber->setAdditionalData($additionalData);
 
-        $marking = $workflow->apply($subject, $transition, $additionalData);
+        $markingStore = $workflow->getMarkingStore();
+        $previousMarking = $markingStore->getMarking($subject);
 
-        $this->notesSubscriber->setAdditionalData([]);
+        try {
+            $marking = $workflow->apply($subject, $transition, $additionalData);
 
-        $transition = $this->getTransitionByName($workflow->getName(), $transition);
-        $changePublishedState = $transition instanceof Transition ? $transition->getChangePublishedState() : null;
+            $transitionObj = $this->getTransitionByName($workflow->getName(), $transition);
+            $changePublishedState = $transitionObj instanceof Transition ? $transitionObj->getChangePublishedState() : null;
 
-        if ($saveSubject) {
-            if ($changePublishedState === ChangePublishedStateSubscriber::SAVE_VERSION) {
-                $subject->saveVersion();
-            } else {
-                $subject->save();
+            if ($saveSubject) {
+                if ($changePublishedState === ChangePublishedStateSubscriber::SAVE_VERSION) {
+                    $subject->saveVersion();
+                } else {
+                    $subject->save();
+                }
             }
+        } catch (\Throwable $e) {
+            // Roll the marking back to its previous state so callers that
+            // fail to persist the subject (e.g. mandatory-field validation
+            // errors triggered by force_published) do not leave the workflow
+            // in a transitioned-but-unsaved state.
+            $markingStore->setMarking($subject, $previousMarking);
+
+            throw $e;
+        } finally {
+            $this->notesSubscriber->setAdditionalData([]);
         }
 
         return $marking;
