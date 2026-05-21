@@ -1,65 +1,62 @@
 # Data Importer Extensions Bundle
 
-Extensions for [Pimcore's Data Importer](https://github.com/pimcore/data-importer): memory-efficient and bulk-loading interpreters, a dynamic path syntax for object placement, plus extra data targets, operators, and element-loader strategies.
+Pimcore Data Importer add-ons for large feeds and dynamic object placement.
 
-Maintained by [Torq IT](https://torqit.ca).
-
-## Contents
-
-- [When to reach for this](#when-to-reach-for-this)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Interpreters](#interpreters)
-- [Path syntax](#path-syntax)
-- [Data targets](#data-targets)
-- [Operators](#operators)
-- [Element loaders](#element-loaders)
-- [Performance notes](#performance-notes)
-- [License](#license)
-
-## When to reach for this
-
-The stock Data Importer is fine for small files and flat object layouts. This bundle exists for three specific problems:
-
-| Problem | What this bundle does |
-|---|---|
-| Large XLSX files OOM the importer | OpenSpout-based streaming interpreter |
-| Queueing 100K+ rows takes minutes | `LOAD DATA LOCAL INFILE` bulk interpreters |
-| Every imported object lands in one folder | Path-template syntax driven by row data |
-
-It also adds smaller quality-of-life pieces — image-gallery append, property targets, tags, classification-store overwrite control, regex/arithmetic operators — listed below.
-
-## Requirements
-
-| | |
-|---|---|
-| Pimcore | `^12.0` |
-| `pimcore/data-importer` | `^2.0` |
-| `pimcore/admin-ui-classic-bundle` | `^2.0` |
-| `openspout/openspout` | `^4.0` |
-| `torq/pimcore-helpers-bundle` | `^2.2.0` |
-| Database | MySQL/MariaDB with `LOCAL INFILE` enabled — bulk interpreters only |
-
-See `composer.json` in the repo for the authoritative list.
-
-## Installation
+> Streams huge XLSX files. Bulk-loads CSVs into the importer queue. Places objects at row-derived paths like `/Products/$[Make]/$[Model]`. Adds extra targets, operators, and element loaders.
 
 ```bash
 composer require torqit/data-importer-extensions-bundle
 ```
 
-Register the bundle in `config/bundles.php`:
+## What you get
+
+A drop-in set of interpreters, operators, targets, and loaders that plug into [Pimcore's Data Importer](https://github.com/pimcore/data-importer) — visible as new options in the standard import-definition UI. Nothing here replaces the importer; it extends it.
+
+The headline pieces:
+
+| Piece | Replaces / adds | Win |
+|---|---|---|
+| **Advanced XLSX interpreter** | the default XLSX interpreter | Constant memory via OpenSpout streaming |
+| **Bulk XLSX / CSV interpreters** | adds | `LOAD DATA LOCAL INFILE` — 200K rows queued in <5s |
+| **Bulk SQL loader + interpreter** | adds | Same bulk path, sourced from any Doctrine DBAL DB |
+| **XML schema preview interpreter** | extends the default XML interpreter | Field mapping populated from an XSD, not the sample doc |
+| **Path syntax** | replaces static "object folder" | `/Products/$[Make]/$[Model]/$[Year]` per row |
+| **Element loaders** | adds | Match existing elements by path template or property |
+| **Targets** | adds | Image-gallery append, properties, tags, classification-store overwrite |
+| **Operators** | adds | Constants, SafeKey, Import Asset Advanced, Arithmetic, Regex Replace, Country Code |
+
+## Requirements
+
+Read off `composer.json`:
+
+- Pimcore `^12.0`
+- `pimcore/data-importer` `^2.0`
+- `pimcore/admin-ui-classic-bundle` `^2.0`
+- `openspout/openspout` `^4.0`
+- `torq/pimcore-helpers-bundle` `^2.2.0`
+
+Bulk interpreters additionally need MySQL/MariaDB with `LOCAL INFILE` enabled on both client and server.
+
+## Install
+
+```bash
+composer require torqit/data-importer-extensions-bundle
+```
+
+Register the bundle:
 
 ```php
+// config/bundles.php
 return [
     // ...
     TorqIT\DataImporterExtensionsBundle\TorqITDataImporterExtensionsBundle::class => ['all' => true],
 ];
 ```
 
-For the bulk interpreters, enable `LOCAL INFILE` on the Doctrine connection (`config/packages/doctrine.yaml`):
+If you want the bulk interpreters, enable `LOCAL INFILE` on the Doctrine connection:
 
 ```yaml
+# config/packages/doctrine.yaml
 doctrine:
     dbal:
         connections:
@@ -68,88 +65,71 @@ doctrine:
                     1001: true   # PDO::MYSQL_ATTR_LOCAL_INFILE
 ```
 
-The MySQL server must also have `local_infile=ON`. Without both, the bulk interpreters fall back with an error.
-
-## Interpreters
-
-| Interpreter | Use it when | Mechanism |
-|---|---|---|
-| Advanced XLSX | XLSX files large enough to OOM PHPOffice but small enough that single-row queueing is fine | Streams the workbook with [OpenSpout](https://github.com/openspout/openspout) |
-| Bulk XLSX | XLSX with 50K+ rows | Converts to CSV on disk, then `LOAD DATA LOCAL INFILE` into the queue table |
-| Bulk CSV | Large CSV inputs | `LOAD DATA LOCAL INFILE` directly |
-| XML schema-based preview | Sparse XML where the sample doc doesn't expose every field | Extends the default XML interpreter to populate the field-mapping preview from an attached XSD |
-
-A **Bulk SQL Data Loader** pairs with a Bulk SQL Interpreter to stream rows from any Doctrine DBAL-compatible database through the same bulk path.
-
-Reported throughput: **200K rows queued in under 5 seconds** with the bulk interpreters, versus minutes with row-by-row inserts.
+…and on the MySQL server (`local_infile=ON`). Without both, the bulk interpreters error out.
 
 ## Path syntax
 
-Replaces the static "object folder" setting with a template expanded per row. Use it to drive both *where* objects are created and *which* object an existing-element strategy matches.
+Use anywhere the bundle accepts a path template — currently the Advanced Path Strategy element loader and creator.
 
-**Excel/CSV — positional:**
+| Form | Example | Notes |
+|---|---|---|
+| Positional column ref | `/Products/$[1]/$[0]` | Excel/CSV |
+| Named column ref | `/Products/$[Make]/$[Model]` | XML |
+| Regex extract | `/Products/$[1\|/^([A-Z]{3})/]` | Captures group 1 |
+| Regex substitute | `/Products/$[1\|/\s+/_/]` | Search/replace |
+
+## Recipes
+
+### Big XLSX, group by two columns
+
 ```
-/Products/Cars/$[1]/$[2]/$[0]
+Interpreter:     Bulk XLSX
+Element loader:  Advanced Path Strategy
+Path template:   /Products/$[Make]/$[Model]
+Field mapping:
+  - "Name"   -> key (via SafeKey operator)
+  - "Price"  -> price
+  - "Image"  -> image (via Import Asset Advanced)
 ```
 
-**XML — named:**
-```
-/Products/Cars/$[Make]/$[Model]/$[Year]
-```
+### Append assets across re-imports
 
-**Regex extraction:**
 ```
-/Products/$[1|/^([A-Z]{3})/]
+Field mapping:
+  - "Image URLs" -> images (target: Image Gallery Appender)
 ```
 
-**Regex substitution:**
+Repeated imports add to the gallery instead of overwriting it.
+
+### Match existing objects by SKU property
+
 ```
-/Products/$[1|/\s+/_/]
+Element loader:  Property-based loader
+Property name:   sku
+Source column:   "SKU"
 ```
 
-## Data targets
+## Picking an interpreter
 
-Additional per-field targets selectable in the import definition:
+Rule of thumb:
 
-- **Advanced Classification Store** — write to classification-store fields with explicit overwrite control (the default merges).
-- **Image Gallery Appender** — appends to image gallery fields instead of replacing, so repeated imports accumulate.
-- **Property** — sets element-level properties (the key/value system properties, not class fields).
-- **Tags** — applies Pimcore tags to the imported element.
+- **<10K rows** → default or Advanced XLSX (Advanced XLSX if memory is an issue).
+- **10K–100K rows** → Advanced XLSX is usually still fine.
+- **100K+ rows, queueing is the bottleneck** → Bulk XLSX / Bulk CSV.
+- **Source is a database, not a file** → Bulk SQL Data Loader + Bulk SQL Interpreter.
 
-## Operators
+## Caveats
 
-Transforms applied in the field-mapping pipeline:
-
-- **Constants** — emit a fixed value.
-- **SafeKey** — sanitize a value for use as a Pimcore element key.
-- **Import Asset Advanced** — download from a URL with control over destination path and asset properties.
-- **Arithmetic** — add/subtract/multiply/divide column values.
-- **Regex Replace** — pattern-based string substitution.
-- **Country Code** — normalize/validate country codes.
-
-## Element loaders
-
-Strategies that decide which existing object to update (or where to create one):
-
-- **Advanced Path Strategy** — load or create using the path-syntax template above.
-- **Property-based loader** — match by Pimcore property rather than key/ID.
-
-## Performance notes
-
-The bulk interpreters bypass the per-row Doctrine insert used by the stock importer. Trade-offs:
-
-- Requires `LOCAL INFILE` on both client (`PDO::MYSQL_ATTR_LOCAL_INFILE`) and server (`local_infile=ON`).
-- Per-row PHP validation does not run during queueing — it runs in the processing phase, same as the standard importer.
-- `LOAD DATA` errors surface as MySQL warnings; if rows go missing, check the importer log first.
-
-Rule of thumb: under ~10K rows, the Advanced XLSX interpreter is enough. Switch to a bulk interpreter only when queueing time becomes the bottleneck.
+- Bulk interpreters skip per-row PHP validation at *queue* time. Validation still runs at *process* time — same as the standard importer — so this is about when errors surface, not whether.
+- `LOAD DATA` failures surface as MySQL warnings. If rows go missing, the importer log is the first place to look.
+- The Image Gallery Appender appends every time — if you re-run the same import, you get duplicates unless your input dedupes.
 
 ## License
 
-See [`LICENSE.md`](LICENSE.md) in this repository.
+See [`LICENSE.md`](LICENSE.md).
 
 ## Links
 
-- [Pimcore Data Importer](https://github.com/pimcore/data-importer) — the upstream bundle this extends
-- [OpenSpout](https://github.com/openspout/openspout) — the streaming spreadsheet library used by the Advanced XLSX interpreter
+- [Pimcore Data Importer](https://github.com/pimcore/data-importer)
+- [OpenSpout](https://github.com/openspout/openspout)
 - [Torq IT](https://torqit.ca)
