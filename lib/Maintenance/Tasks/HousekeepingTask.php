@@ -51,36 +51,60 @@ class HousekeepingTask implements TaskInterface
             return;
         }
 
-        $directory = new RecursiveDirectoryIterator($folder);
-        $filter = new RecursiveCallbackFilterIterator($directory, function (SplFileInfo $current, $key, $iterator) use ($seconds) {
-            if (strpos($current->getFilename(), '-low-quality-preview.svg')) {
+        $cutoff = time() - $seconds;
+
+        $directory = new RecursiveDirectoryIterator($folder, \FilesystemIterator::SKIP_DOTS);
+        $filter = new RecursiveCallbackFilterIterator($directory, function (SplFileInfo $current, $key, $iterator) use ($cutoff) {
+            if (strpos($current->getFilename(), '-low-quality-preview.svg') !== false) {
                 // do not delete low quality image previews
                 return false;
             }
 
             if ($current->isFile()) {
-                if ($current->getATime() && $current->getATime() < (time() - $seconds)) {
+                $aTime = $current->getATime();
+                $mTime = $current->getMTime();
+                $timeToCheck = $aTime ?: $mTime;
+
+                if ($timeToCheck && $timeToCheck < $cutoff) {
                     return true;
                 }
-            } else {
-                return true;
+
+                return false;
             }
 
-            return false;
+            return true;
         });
 
         $iterator = new RecursiveIteratorIterator($filter);
 
         foreach ($iterator as $file) {
-            /**
-             * @var SplFileInfo $file
-             */
+            /** @var SplFileInfo $file */
             if ($file->isFile()) {
                 @unlink($file->getPathname());
             }
+        }
 
-            if (is_dir_empty($file->getPath()) && $clearFolder) {
-                @rmdir($file->getPath());
+        if ($clearFolder) {
+            $dirIterator = new RecursiveDirectoryIterator($folder, \FilesystemIterator::SKIP_DOTS);
+            $dirWalker = new RecursiveIteratorIterator($dirIterator, RecursiveIteratorIterator::CHILD_FIRST);
+
+            foreach ($dirWalker as $entry) {
+                if (!$entry->isDir()) {
+                    continue;
+                }
+
+                $dirPath = $entry->getPathname();
+
+                if ($dirPath === $folder) {
+                    continue;
+                }
+
+                $stat = @stat($dirPath);
+                $dirTime = $stat ? ($stat['mtime'] ?: $stat['ctime']) : false;
+
+                if ($dirTime && $dirTime < $cutoff && is_dir_empty($dirPath)) {
+                    @rmdir($dirPath);
+                }
             }
         }
     }
