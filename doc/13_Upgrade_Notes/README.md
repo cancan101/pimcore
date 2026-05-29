@@ -53,6 +53,7 @@ ORDER BY TABLE_NAME, COLUMN_NAME;
 - Added support for PHP `8.5` and bumped minimum requirement of Symfony to `7.4`.
 - Dropped support for PHP `8.3` and Symfony `6`.
 - [QuantityValue] Introduced foreign key constraints on `__unit` columns in object store, query, localized, objectbrick and fieldcollection tables for `QuantityValue`, `InputQuantityValue` and `QuantityValueRange` fields. These constraints reference `quantityvalue_units(id)` with `ON DELETE SET NULL` and `ON UPDATE CASCADE`, ensuring referential integrity. The migration automatically cleans up orphaned unit references (setting them to `NULL`) and changes the `__unit` column type from `varchar(64)` to `varchar(50)` to match the referenced `quantityvalue_units.id` column. If you have custom unit IDs longer than 50 characters, they will be truncated.
+- The default session cookie `SameSite` attribute has been changed from `strict` to `lax` (`framework.session.cookie_samesite`). With `strict`, the session cookie was not sent on top-level cross-site GET navigations, which logged users out when an admin deeplink was opened from an email, another tab or via `window.location.replace()` from a different origin. `lax` still prevents the cookie from being sent on cross-site state-changing requests (POST/PUT/...) and Pimcore's CSRF tokens remain in place. If you relied on the previous `strict` behavior, you can restore it by overriding `framework.session.cookie_samesite: 'strict'` in your own configuration.
 
 #### Removed deprecated and discontinued bundles
 The following bundles have been removed:

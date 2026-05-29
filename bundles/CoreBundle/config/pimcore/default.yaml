@@ -22,7 +22,12 @@ framework:
         # http://symfony.com/doc/current/reference/configuration/framework.html#handler-id
         # use the native PHP session mechanism
         handler_id:  null
-        cookie_samesite: 'strict'
+        # 'lax' (instead of 'strict') so the session cookie is still sent on top-level
+        # cross-site GET navigations (e.g. admin deeplinks opened from emails, other tabs
+        # or via window.location.replace()). 'strict' would drop the cookie on such
+        # navigations and log the user out. State-changing requests remain protected by
+        # SameSite=Lax (cookie not sent on cross-site POST/PUT/...) and Pimcore's CSRF tokens.
+        cookie_samesite: 'lax'
         storage_factory_id: session.storage.factory.native
         cookie_secure: auto
     php_errors:
