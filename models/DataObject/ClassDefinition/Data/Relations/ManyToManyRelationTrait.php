@@ -110,6 +110,6 @@ trait ManyToManyRelationTrait
             }
         }
 
-        return $this->getRelationFilterCondition($value, $operator, $prefix . $name);
+        return $this->getRelationFilterCondition($value, $operator, $prefix . $name, $params['combinator'] ?? 'AND');
     }
 }

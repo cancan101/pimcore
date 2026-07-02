@@ -572,7 +572,7 @@ class Hotspotimage extends Data implements ResourcePersistenceAwareInterface, Qu
         $name = $params['name'] ?: $this->name;
         $name .= '__image';
 
-        return $this->getRelationFilterCondition($value, $operator, $name);
+        return $this->getRelationFilterCondition($value, $operator, $name, $params['combinator'] ?? 'AND');
     }
 
     public function getColumnType(): array

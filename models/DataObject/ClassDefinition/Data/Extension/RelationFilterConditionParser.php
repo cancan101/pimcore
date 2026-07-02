@@ -24,8 +24,11 @@ trait RelationFilterConditionParser
 {
     /**
      * Parses filter value of a relation field and creates the filter condition
+     *
+     * @param string $combinator 'AND' (all values must match) or 'OR' (any value must match),
+     *                           used to combine the conditions when filtering by multiple values
      */
-    public function getRelationFilterCondition(?string $value, string $operator, string $name): string
+    public function getRelationFilterCondition(?string $value, string $operator, string $name, string $combinator = 'AND'): string
     {
         $db = \Pimcore\Db::get();
         $result = $db->quoteIdentifier($name) . ' IS NULL';
@@ -35,6 +38,7 @@ trait RelationFilterConditionParser
         if ($operator === '=') {
             return $db->quoteIdentifier($name) . ' = ' . $db->quote((string) $value);
         }
+        $combinator = strtoupper($combinator) === 'OR' ? 'OR' : 'AND';
         $values = explode(',', $value);
         $fieldConditions = array_map(function ($value) use ($name, $db) {
             $quotedValue = $db->quote('%,' . Helper::escapeLike((string) $value) . ',%');
@@ -42,7 +46,7 @@ trait RelationFilterConditionParser
             return $db->quoteIdentifier($name) . ' LIKE ' . $quotedValue . ' ';
         }, array_filter($values));
         if (!empty($fieldConditions)) {
-            $result = '(' . implode(' AND ', $fieldConditions) . ')';
+            $result = '(' . implode(' ' . $combinator . ' ', $fieldConditions) . ')';
         }
 
         return $result;
