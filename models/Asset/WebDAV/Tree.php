@@ -36,7 +36,11 @@ class Tree extends DAV\Tree
      *  2. the destination was just deleted and is still in the delete log -> re-create it from
      *     the source content while reusing the deleted id (see Asset\WebDAV\File::delete());
      *  3. neither -> a plain rename of the source.
-     * Across directories it is a plain move of the source into the destination folder.
+     * Across directories the destination may also be renamed as part of the move (a WebDAV MOVE
+     * can move and rename in one operation), and it handles two cases for the destination:
+     *  1. the destination already exists -> overwrite it in place (keeps its id/history), mirroring
+     *     the same-directory overwrite above;
+     *  2. otherwise -> a plain move of the source into the destination folder.
      *
      * The delete-log branch exists to support clients (e.g. Photoshop) that replace a file via
      * delete + create + move instead of an overwrite. That log is a best-effort, ~30s-lived
@@ -76,7 +80,7 @@ class Tree extends DAV\Tree
                     if (!$sourceAsset) {
                         throw new NotFound('Source asset not found');
                     }
-                    $asset->setData($sourceAsset->getData());
+                    $asset->setStream($sourceAsset->getStream());
 
                 }
 
@@ -95,12 +99,15 @@ class Tree extends DAV\Tree
                     $logEntry = $log['/' . $destinationPath];
                     $restoredId = $logEntry['id'] ?? null;
                     if ($restoredId !== null) {
+                        // Create a shell from filename/type only (no 'data'), then stream the
+                        // content in separately: this avoids loading the whole file into memory
+                        // and avoids Asset::create()'s mime-detection consuming the source stream.
                         $asset = Asset::create($sourceAsset->getParentId(), [
                             'filename' => basename($destinationPath),
-                            'data' => $sourceAsset->getData(),
                             'type' => $sourceAsset->getType(),
                         ], false);
                         $asset->setId((int) $restoredId);
+                        $asset->setStream($sourceAsset->getStream());
                         // destination lives in the same folder as the source; set the path now
                         // so the permission check below sees the correct workspace location
                         $asset->setPath((string) $sourceAsset->getRealPath());
@@ -129,15 +136,34 @@ class Tree extends DAV\Tree
                 }
                 $asset->setFilename(basename($destinationPath));
             } else {
-                $asset = Asset::getByPath('/' . $sourcePath);
                 $parent = Asset::getByPath('/' . dirname($destinationPath));
-
-                if (!$asset || !$parent) {
+                if (!$parent) {
                     throw new NotFound('Source asset or destination folder not found');
                 }
 
-                $asset->setPath($parent->getRealFullPath() . '/');
-                $asset->setParentId($parent->getId());
+                $existing = Asset::getByPath('/' . $destinationPath);
+                if ($existing) {
+                    // The destination already exists: overwrite it in place (mirroring the
+                    // same-directory overwrite branch above) so its id/history is preserved.
+                    $sourceAsset = Asset::getByPath('/' . $sourcePath);
+                    if (!$sourceAsset) {
+                        throw new NotFound('Source asset not found');
+                    }
+
+                    $asset = $existing;
+                    $asset->setStream($sourceAsset->getStream());
+                    $asset->setFilename(basename($destinationPath));
+                } else {
+                    $asset = Asset::getByPath('/' . $sourcePath);
+                    if (!$asset) {
+                        throw new NotFound('Source asset not found');
+                    }
+
+                    $parentPath = $parent->getRealFullPath();
+                    $asset->setPath($parentPath === '/' ? '/' : $parentPath . '/');
+                    $asset->setParentId($parent->getId());
+                    $asset->setFilename(basename($destinationPath));
+                }
             }
 
             if (isset($parent)) {

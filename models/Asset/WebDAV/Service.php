@@ -70,4 +70,52 @@ class Service
         $filesystem = new Filesystem();
         $filesystem->dumpFile(self::getDeleteLogFile(), serialize($tmpLog));
     }
+
+    /**
+     * Atomically add (or overwrite) a single delete-log entry under an exclusive file lock,
+     * so concurrent WebDAV requests cannot lose each other's entries.
+     *
+     * @param array<string, mixed> $entry
+     */
+    public static function addDeleteLogEntry(string $path, array $entry): void
+    {
+        $file = self::getDeleteLogFile();
+        $handle = fopen($file, 'c+');
+        if ($handle === false) {
+            return; // best effort: never let logging failure break a delete
+        }
+
+        try {
+            flock($handle, LOCK_EX);
+
+            $log = [];
+            $raw = stream_get_contents($handle);
+            if (is_string($raw) && $raw !== '') {
+                // the delete log only holds scalar entries (path => [id, timestamp]),
+                // so no object instantiation is expected or allowed
+                $decoded = unserialize($raw, ['allowed_classes' => false]);
+                if (is_array($decoded)) {
+                    $log = $decoded;
+                }
+            }
+
+            // cleanup old entries
+            $now = time();
+            foreach ($log as $key => $data) {
+                if (!is_array($data) || !isset($data['timestamp']) || $data['timestamp'] <= ($now - 30)) { // remove 30 seconds old entries
+                    unset($log[$key]);
+                }
+            }
+
+            $log[$path] = $entry;
+
+            rewind($handle);
+            ftruncate($handle, 0);
+            fwrite($handle, serialize($log));
+            fflush($handle);
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
 }

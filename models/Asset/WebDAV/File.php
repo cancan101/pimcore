@@ -92,15 +92,14 @@ class File extends DAV\File
             // record the deleted asset's id (plus the scalar property/metadata snapshot) so
             // the destination can keep its id - and thus any hardcoded references - and its
             // metadata across a delete + create + move. For details see Asset\WebDAV\Tree::move().
-            $log = Asset\WebDAV\Service::getDeleteLog();
-            $log[$path] = [
+            // Written atomically (locked read-modify-write) so concurrent WebDAV requests
+            // cannot clobber each other's log entries.
+            Asset\WebDAV\Service::addDeleteLogEntry($path, [
                 'id' => $id,
                 'timestamp' => time(),
                 'properties' => $properties,
                 'metadata' => $metadata,
-            ];
-
-            Asset\WebDAV\Service::saveDeleteLog($log);
+            ]);
         } else {
             throw new DAV\Exception\Forbidden();
         }
@@ -161,14 +160,22 @@ class File extends DAV\File
     }
 
     /**
-     * @return resource|null
+     * @return resource
      *
      * @throws DAV\Exception\Forbidden
+     * @throws DAV\Exception\NotFound
      */
     public function get()
     {
         if ($this->asset->isAllowed('view')) {
-            return $this->asset->getStream();
+            $stream = $this->asset->getStream();
+            if (!is_resource($stream)) {
+                // getStream() can return null (e.g. the underlying storage file is missing);
+                // Sabre expects a resource, so fail loudly instead of returning null
+                throw new DAV\Exception\NotFound('Asset stream not available');
+            }
+
+            return $stream;
         } else {
             throw new DAV\Exception\Forbidden();
         }

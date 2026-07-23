@@ -315,6 +315,51 @@ class WebDavIntegrationTest extends ModelTestCase
         $this->assertSame('ACME', $restored->getMetadata('copyright'));
     }
 
+    /**
+     * A cross-directory MOVE that also renames must apply the new filename at the destination,
+     * not silently keep the source name.
+     */
+    public function testMoveAcrossDirectoriesWithRename(): void
+    {
+        $target = TestHelper::createAssetFolder();
+        $asset = $this->createFileAssetIn($this->root, 'cross-src.txt', 'content');
+        $id = $asset->getId();
+
+        $this->newTree()->move(
+            $this->davPath($asset),
+            ltrim($target->getRealFullPath() . '/cross-renamed.txt', '/')
+        );
+
+        $this->assertNull(Asset::getByPath($this->root->getRealFullPath() . '/cross-src.txt'));
+        $moved = Asset::getByPath($target->getRealFullPath() . '/cross-renamed.txt');
+        $this->assertInstanceOf(Asset::class, $moved);
+        $this->assertSame($id, $moved->getId());
+        $this->assertSame($target->getId(), $moved->getParentId());
+    }
+
+    /**
+     * Moving onto an existing file in another folder must overwrite it in place, preserving the
+     * destination's id while taking the source content.
+     */
+    public function testMoveAcrossDirectoriesOverwritesExistingDestination(): void
+    {
+        $target = TestHelper::createAssetFolder();
+        $source = $this->createFileAssetIn($this->root, 'x-source.txt', 'SOURCE');
+        $dest = $this->createFileAssetIn($target, 'x-dest.txt', 'DEST');
+        $destId = $dest->getId();
+
+        $this->newTree()->move(
+            $this->davPath($source),
+            ltrim($target->getRealFullPath() . '/x-dest.txt', '/')
+        );
+
+        $this->assertNull(Asset::getByPath($this->root->getRealFullPath() . '/x-source.txt'));
+        $result = Asset::getById($destId, ['force' => true]);
+        $this->assertInstanceOf(Asset::class, $result);
+        $this->assertSame($destId, $result->getId(), 'cross-directory overwrite must preserve the destination id');
+        $this->assertSame('SOURCE', $result->getData());
+    }
+
     public function testMoveWithMissingSourceThrowsNotFound(): void
     {
         $this->expectException(NotFound::class);
