@@ -160,22 +160,14 @@ class File extends DAV\File
     }
 
     /**
-     * @return resource
+     * @return resource|null
      *
      * @throws DAV\Exception\Forbidden
-     * @throws DAV\Exception\NotFound
      */
     public function get()
     {
         if ($this->asset->isAllowed('view')) {
-            $stream = $this->asset->getStream();
-            if (!is_resource($stream)) {
-                // getStream() can return null (e.g. the underlying storage file is missing);
-                // Sabre expects a resource, so fail loudly instead of returning null
-                throw new DAV\Exception\NotFound('Asset stream not available');
-            }
-
-            return $stream;
+            return $this->asset->getStream();
         } else {
             throw new DAV\Exception\Forbidden();
         }

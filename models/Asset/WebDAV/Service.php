@@ -72,50 +72,34 @@ class Service
     }
 
     /**
-     * Atomically add (or overwrite) a single delete-log entry under an exclusive file lock,
-     * so concurrent WebDAV requests cannot lose each other's entries.
+     * Atomically add (or overwrite) a single delete-log entry, so concurrent WebDAV requests
+     * cannot lose each other's entries.
+     *
+     * A dedicated lock file provides mutual exclusion between writers (read-modify-write), while
+     * the data file itself is still written via dumpFile() (temp file + atomic rename). That way a
+     * concurrent reader in getDeleteLog() - which does not take the lock - always sees a complete
+     * file, never a torn one.
      *
      * @param array<string, mixed> $entry
      */
     public static function addDeleteLogEntry(string $path, array $entry): void
     {
-        $file = self::getDeleteLogFile();
-        $handle = fopen($file, 'c+');
-        if ($handle === false) {
+        $lockHandle = fopen(self::getDeleteLogFile() . '.lock', 'c');
+        if ($lockHandle === false) {
             return; // best effort: never let logging failure break a delete
         }
 
         try {
-            flock($handle, LOCK_EX);
+            flock($lockHandle, LOCK_EX);
 
-            $log = [];
-            $raw = stream_get_contents($handle);
-            if (is_string($raw) && $raw !== '') {
-                // the delete log only holds scalar entries (path => [id, timestamp]),
-                // so no object instantiation is expected or allowed
-                $decoded = unserialize($raw, ['allowed_classes' => false]);
-                if (is_array($decoded)) {
-                    $log = $decoded;
-                }
-            }
-
-            // cleanup old entries
-            $now = time();
-            foreach ($log as $key => $data) {
-                if (!is_array($data) || !isset($data['timestamp']) || $data['timestamp'] <= ($now - 30)) { // remove 30 seconds old entries
-                    unset($log[$key]);
-                }
-            }
-
+            $log = self::getDeleteLog(); // reads + prunes stale entries
             $log[$path] = $entry;
 
-            rewind($handle);
-            ftruncate($handle, 0);
-            fwrite($handle, serialize($log));
-            fflush($handle);
+            $filesystem = new Filesystem();
+            $filesystem->dumpFile(self::getDeleteLogFile(), serialize($log));
         } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
+            flock($lockHandle, LOCK_UN);
+            fclose($lockHandle);
         }
     }
 }

@@ -36,11 +36,10 @@ class Tree extends DAV\Tree
      *  2. the destination was just deleted and is still in the delete log -> re-create it from
      *     the source content while reusing the deleted id (see Asset\WebDAV\File::delete());
      *  3. neither -> a plain rename of the source.
-     * Across directories the destination may also be renamed as part of the move (a WebDAV MOVE
-     * can move and rename in one operation), and it handles two cases for the destination:
-     *  1. the destination already exists -> overwrite it in place (keeps its id/history), mirroring
-     *     the same-directory overwrite above;
-     *  2. otherwise -> a plain move of the source into the destination folder.
+     * Across directories it is a plain move of the source into the destination folder, and a
+     * rename may be applied at the same time (a WebDAV MOVE can move and rename in one operation).
+     * Sabre deletes any existing destination before calling move(), so the destination never
+     * exists here and there is no cross-directory overwrite case to handle.
      *
      * The delete-log branch exists to support clients (e.g. Photoshop) that replace a file via
      * delete + create + move instead of an overwrite. That log is a best-effort, ~30s-lived
@@ -136,34 +135,20 @@ class Tree extends DAV\Tree
                 }
                 $asset->setFilename(basename($destinationPath));
             } else {
+                $asset = Asset::getByPath('/' . $sourcePath);
                 $parent = Asset::getByPath('/' . dirname($destinationPath));
-                if (!$parent) {
+
+                if (!$asset || !$parent) {
                     throw new NotFound('Source asset or destination folder not found');
                 }
 
-                $existing = Asset::getByPath('/' . $destinationPath);
-                if ($existing) {
-                    // The destination already exists: overwrite it in place (mirroring the
-                    // same-directory overwrite branch above) so its id/history is preserved.
-                    $sourceAsset = Asset::getByPath('/' . $sourcePath);
-                    if (!$sourceAsset) {
-                        throw new NotFound('Source asset not found');
-                    }
-
-                    $asset = $existing;
-                    $asset->setStream($sourceAsset->getStream());
-                    $asset->setFilename(basename($destinationPath));
-                } else {
-                    $asset = Asset::getByPath('/' . $sourcePath);
-                    if (!$asset) {
-                        throw new NotFound('Source asset not found');
-                    }
-
-                    $parentPath = $parent->getRealFullPath();
-                    $asset->setPath($parentPath === '/' ? '/' : $parentPath . '/');
-                    $asset->setParentId($parent->getId());
-                    $asset->setFilename(basename($destinationPath));
-                }
+                // Sabre deletes an existing destination (which writes the delete log) BEFORE
+                // calling move(), so across directories this is always a plain move of the
+                // source; a rename may be applied at the same time (basename may differ).
+                $parentPath = $parent->getRealFullPath();
+                $asset->setPath($parentPath === '/' ? '/' : $parentPath . '/');
+                $asset->setParentId($parent->getId());
+                $asset->setFilename(basename($destinationPath));
             }
 
             if (isset($parent)) {

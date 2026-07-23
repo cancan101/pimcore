@@ -337,29 +337,6 @@ class WebDavIntegrationTest extends ModelTestCase
         $this->assertSame($target->getId(), $moved->getParentId());
     }
 
-    /**
-     * Moving onto an existing file in another folder must overwrite it in place, preserving the
-     * destination's id while taking the source content.
-     */
-    public function testMoveAcrossDirectoriesOverwritesExistingDestination(): void
-    {
-        $target = TestHelper::createAssetFolder();
-        $source = $this->createFileAssetIn($this->root, 'x-source.txt', 'SOURCE');
-        $dest = $this->createFileAssetIn($target, 'x-dest.txt', 'DEST');
-        $destId = $dest->getId();
-
-        $this->newTree()->move(
-            $this->davPath($source),
-            ltrim($target->getRealFullPath() . '/x-dest.txt', '/')
-        );
-
-        $this->assertNull(Asset::getByPath($this->root->getRealFullPath() . '/x-source.txt'));
-        $result = Asset::getById($destId, ['force' => true]);
-        $this->assertInstanceOf(Asset::class, $result);
-        $this->assertSame($destId, $result->getId(), 'cross-directory overwrite must preserve the destination id');
-        $this->assertSame('SOURCE', $result->getData());
-    }
-
     public function testMoveWithMissingSourceThrowsNotFound(): void
     {
         $this->expectException(NotFound::class);
