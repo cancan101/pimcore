@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace Pimcore\Bundle\CoreBundle\Command;
 
 use Pimcore\Console\AbstractCommand;
+use Pimcore\Model\Element;
 use Pimcore\Model\User;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -97,12 +98,10 @@ class UserListCommand extends AbstractCommand
         $file = $file !== null ? (string) $file : null;
 
         if ($format === self::FORMAT_CSV) {
-            $this->outputCsv($rows, $file);
-        } else {
-            $this->outputTable($rows, $file);
+            return $this->outputCsv($rows, $file);
         }
 
-        return self::SUCCESS;
+        return $this->outputTable($rows, $file);
     }
 
     /**
@@ -165,38 +164,58 @@ class UserListCommand extends AbstractCommand
     /**
      * @param array<int, array<string, string>> $rows
      */
-    private function outputTable(array $rows, ?string $file): void
+    private function outputTable(array $rows, ?string $file): int
     {
         if ($file !== null) {
             $this->writeError('The --file option is only supported for the "csv" format.');
+
+            return self::FAILURE;
         }
 
         $tableRows = array_map(static fn (array $row): array => array_values($row), $rows);
 
         $this->io->table(array_values(self::COLUMNS), $tableRows);
         $this->io->writeln(sprintf('%d user(s) found.', count($rows)));
+
+        return self::SUCCESS;
     }
 
     /**
      * @param array<int, array<string, string>> $rows
      */
-    private function outputCsv(array $rows, ?string $file): void
+    private function outputCsv(array $rows, ?string $file): int
     {
-        $stream = $file !== null ? fopen($file, 'w') : fopen('php://output', 'w');
+        // without a target file the CSV is buffered and handed to the console output, so that it
+        // honors output redirection instead of writing to the process' stdout directly
+        $target = $file ?? 'php://temp';
+
+        // failures are reported through the command output instead of a PHP warning
+        $stream = @fopen($target, $file !== null ? 'w' : 'r+');
         if ($stream === false) {
-            $this->writeError(sprintf('Unable to open "%s" for writing.', $file ?? 'php://output'));
+            $this->writeError(sprintf('Unable to open "%s" for writing.', $target));
 
-            return;
+            return self::FAILURE;
         }
 
-        fputcsv($stream, array_values(self::COLUMNS), ',', '"', '\\');
+        // the escape character is passed explicitly to opt out of PHP's proprietary escaping
+        // mechanism, which is deprecated as of PHP 8.4, and to produce RFC 4180 compliant output
+        fputcsv($stream, array_values(self::COLUMNS), ',', '"', '');
         foreach ($rows as $row) {
-            fputcsv($stream, array_values($row), ',', '"', '\\');
+            // guard against CSV injection, values such as names are not restricted to safe characters
+            fputcsv($stream, array_values(Element\Service::escapeCsvRecord($row)), ',', '"', '');
         }
 
-        if ($file !== null) {
+        if ($file === null) {
+            rewind($stream);
+            $this->output->write((string) stream_get_contents($stream), false, OutputInterface::OUTPUT_RAW);
             fclose($stream);
-            $this->io->writeln(sprintf('Exported %d user(s) to %s', count($rows), $file));
+
+            return self::SUCCESS;
         }
+
+        fclose($stream);
+        $this->io->writeln(sprintf('Exported %d user(s) to %s', count($rows), $file));
+
+        return self::SUCCESS;
     }
 }

@@ -27,6 +27,8 @@ class UserListCommandTest extends ModelTestCase
 
     private const INACTIVE_USER = 'user-list-inactive';
 
+    private const FORMULA_USER = 'user-list-formula';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -46,6 +48,14 @@ class UserListCommandTest extends ModelTestCase
         $inactive->setAdmin(false);
         $inactive->setActive(false);
         $inactive->save();
+
+        // usernames are restricted to safe characters, names are not
+        $formula = new User();
+        $formula->setName(self::FORMULA_USER);
+        $formula->setFirstname('=1+1');
+        $formula->setEmail('formula@example.com');
+        $formula->setActive(true);
+        $formula->save();
     }
 
     protected function tearDown(): void
@@ -57,7 +67,7 @@ class UserListCommandTest extends ModelTestCase
 
     private function cleanupUsers(): void
     {
-        foreach ([self::ACTIVE_ADMIN, self::INACTIVE_USER] as $name) {
+        foreach ([self::ACTIVE_ADMIN, self::INACTIVE_USER, self::FORMULA_USER] as $name) {
             $user = User::getByName($name);
             if ($user instanceof User) {
                 $user->delete();
@@ -133,5 +143,40 @@ class UserListCommandTest extends ModelTestCase
                 unlink($file);
             }
         }
+    }
+
+    public function testFileOptionIsRejectedForTableFormat(): void
+    {
+        $file = sys_get_temp_dir() . '/pimcore_user_list_' . uniqid() . '.csv';
+
+        $tester = $this->createCommandTester();
+        $tester->execute(['--format' => 'table', '--file' => $file], ['interactive' => false]);
+
+        $this->assertSame(1, $tester->getStatusCode());
+        $this->assertStringContainsString('only supported for the "csv" format', $tester->getDisplay());
+        $this->assertFileDoesNotExist($file);
+    }
+
+    public function testUnwritableFileFails(): void
+    {
+        $tester = $this->createCommandTester();
+        $tester->execute(
+            ['--format' => 'csv', '--file' => sys_get_temp_dir() . '/pimcore-user-list-missing-dir/export.csv'],
+            ['interactive' => false]
+        );
+
+        $this->assertSame(1, $tester->getStatusCode());
+        $this->assertStringContainsString('Unable to open', $tester->getDisplay());
+    }
+
+    public function testCsvEscapesFormulaLikeValues(): void
+    {
+        $tester = $this->createCommandTester();
+        $tester->execute(['--format' => 'csv'], ['interactive' => false]);
+
+        $display = $tester->getDisplay();
+        $this->assertStringContainsString(self::FORMULA_USER, $display);
+        $this->assertStringContainsString("'=1+1", $display);
+        $this->assertDoesNotMatchRegularExpression('/(^|[,"])=1\+1/', $display);
     }
 }
