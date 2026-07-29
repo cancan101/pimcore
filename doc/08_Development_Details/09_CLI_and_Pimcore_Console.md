@@ -124,4 +124,27 @@ su -l www-data -s /bin/bash -c "bin/console awesome:command"
 | `pimcore:bundle:install` | Install a Pimcore bundle |
 | `pimcore:bundle:list` | List all registered Pimcore bundles |
 
+### Users
+
+| Command | Purpose |
+|---|---|
+| `pimcore:user:list` | List or export the configured users |
+| `pimcore:user:reset-password` | Reset the password of a user |
+
+`pimcore:user:list` prints the users as a table by default and can export them as CSV, which is useful
+for auditing who has access to a system:
+
+```bash
+# print all users as a table
+bin/console pimcore:user:list
+
+# export all active administrators to a CSV file
+bin/console pimcore:user:list --format=csv --admins-only --exclude-inactive --file=var/admins.csv
+```
+
+Without `--file` the CSV is written to the console output, so it can be piped or redirected. The export
+contains the ID, username, first and last name, email address, language, admin and active flags, the
+assigned roles and the last login. It never contains credentials such as password hashes or
+two factor authentication secrets. User folders are not part of the output.
+
 Run any command with `--help` for a full description of its options and arguments.
