@@ -16,10 +16,17 @@ The only data stored is the one in the object's query tables for being able to q
 > Values in the query table are only updated when the data object is saved. So be careful, the values in the query 
 > table might not be up-to-date depending on the calculation parameters.  
 
-As display type in object editor three types are available: 
+As display type in object editor the following types are available: 
 - Input: Single line, displayed as read-only input field.
 - TextArea: Multi line, displayed as read-only text area.
 - HTML: Multi line HTML content, displayed as display field.
+- User: Single line, resolves the calculated value to a Pimcore user and displays it as `username (Firstname Lastname)`.
+
+> The `User` element type is a presentation hint only. The expression or calculator class can return either the
+> numeric ID or the username (string) of a `Pimcore\Model\User`; the value is resolved to the display format
+> server-side when rendering the edit mode. If the value can't be resolved to an existing user (or is empty), it is
+> displayed as-is (or empty). The query table column still stores whatever value the calculation returned (ID or
+> username), not the formatted display string.
 
 
 ## Calculation

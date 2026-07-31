@@ -1208,12 +1208,22 @@ class Service extends Model\Element\Service
                         return null;
                     }
 
-                    return $calculator->getCalculatedValueForEditMode($object, $data);
+                    $result = $calculator->getCalculatedValueForEditMode($object, $data);
+                    if ($fd->getElementType() === 'user') {
+                        return self::formatCalculatedUserValueForDisplay($result);
+                    }
+
+                    return $result;
 
                 case DataObject\ClassDefinition\Data\CalculatedValue::CALCULATOR_TYPE_EXPRESSION:
 
                     try {
-                        return (string) self::evaluateExpression($fd, $object, $data);
+                        $result = self::evaluateExpression($fd, $object, $data);
+                        if ($fd->getElementType() === 'user') {
+                            return self::formatCalculatedUserValueForDisplay($result);
+                        }
+
+                        return (string) $result;
                     } catch (SyntaxError $exception) {
                         return $exception->getMessage();
                     }
@@ -1222,6 +1232,30 @@ class Service extends Model\Element\Service
                     return null;
             }
         });
+    }
+
+    private static function formatCalculatedUserValueForDisplay(mixed $value): ?string
+    {
+        if (is_numeric($value)) {
+            $user = Model\User::getById((int) $value);
+        } elseif (is_string($value) && $value !== '') {
+            $user = Model\User::getByName($value);
+        } else {
+            $user = null;
+        }
+
+        if (!$user instanceof Model\User) {
+            return empty($value) ? null : (string) $value;
+        }
+
+        $displayValue = $user->getName();
+        $first = $user->getFirstname();
+        $last = $user->getLastname();
+        if (!empty($first) || !empty($last)) {
+            $displayValue .= ' (' . $first . ' ' . $last . ')';
+        }
+
+        return $displayValue;
     }
 
     public static function getCalculatedFieldValue(Fieldcollection\Data\AbstractData|Objectbrick\Data\AbstractData|Concrete $object, ?Data\CalculatedValue $data): mixed
