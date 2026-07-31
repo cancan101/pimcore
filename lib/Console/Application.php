@@ -68,9 +68,12 @@ final class Application extends \Symfony\Bundle\FrameworkBundle\Console\Applicat
             $maintenanceModeHelper = $kernel->getContainer()->get(MaintenanceModeHelperInterface::class);
 
             // skip if maintenance mode is on and the flag is not set
-            if (($maintenanceModeHelper->isActive()) &&
-                (!$event->getInput()->hasOption('ignore-maintenance-mode') ||
-                 !$event->getInput()->getOption('ignore-maintenance-mode'))
+            // the flag is evaluated first on purpose: resolving the maintenance mode state requires a
+            // working database connection, which must not be a prerequisite for commands that are
+            // explicitly allowed to run in maintenance mode anyway
+            if ((!$event->getInput()->hasOption('ignore-maintenance-mode') ||
+                 !$event->getInput()->getOption('ignore-maintenance-mode')) &&
+                $maintenanceModeHelper->isActive()
             ) {
                 throw new RuntimeException(
                     'In maintenance mode - set the flag --ignore-maintenance-mode to force execution!'
