@@ -152,6 +152,10 @@ final class WorkflowPass implements CompilerPassInterface
                     $markingStoreDefinition->addArgument($workflowName);
                 }
 
+                if ($markingStoreType === 'state_table') {
+                    $markingStoreDefinition->addArgument((bool)($workflowConfig['marking_store']['versioning'] ?? false));
+                }
+
                 if ($markingStoreType === 'data_object_splitted_state') {
                     $markingStoreDefinition->addArgument($places);
                 }

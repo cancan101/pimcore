@@ -62,6 +62,9 @@ services:
     Pimcore\Workflow\EventSubscriber\NotesSubscriber: ~
 
     Pimcore\Workflow\EventSubscriber\ChangePublishedStateSubscriber: ~
+
+    Pimcore\Workflow\EventSubscriber\PublishedStateBaselineSubscriber: ~
+
     pimcore.workflow.place-options-provider:
         class: Pimcore\Workflow\Place\OptionsProvider
         public: true
