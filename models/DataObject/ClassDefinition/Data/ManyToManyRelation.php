@@ -338,7 +338,7 @@ class ManyToManyRelation extends AbstractRelations implements QueryResourcePersi
     {
         $gridData = $this->getDataForEditmode($data, $object, $params);
 
-        if ($this->getPathFormatterClass() && !empty($gridData)) {
+        if ($this->hasPathFormatter() && !empty($gridData)) {
             $params['fd'] = $object->getClass()->getFieldDefinition($this->getName(), $params['context'] ?? []);
             foreach ($gridData as &$relatedElementData) {
                 $pathFormatterData = [
