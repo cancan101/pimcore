@@ -550,16 +550,11 @@ class Service extends Model\Element\Service
         try {
             $object = new DataObject();
 
-            $pathElements = explode('/', $path);
-            $keyIdx = count($pathElements) - 1;
-            $key = $pathElements[$keyIdx];
-            $validKey = Element\Service::getValidKey($key, 'object');
-
-            unset($pathElements[$keyIdx]);
-            $pathOnly = implode('/', $pathElements);
-
-            if ($validKey == $key && self::isValidPath($pathOnly, 'object')) {
-                $object->getDao()->getByPath($path);
+            if (self::isValidPath($path, 'object')) {
+                Element\Service::getByPathWithNfcFallback(
+                    fn (string $candidate) => $object->getDao()->getByPath($candidate),
+                    $path
+                );
 
                 return true;
             }
@@ -1054,6 +1049,12 @@ class Service extends Model\Element\Service
             return;
         }
 
+        // Some callers (e.g. grid column configuration) cannot supply a Concrete $object - field
+        // enrichment requires that - but can still provide a permission subject via context['object']
+        // (a Folder or Concrete). Capture it before it gets overwritten below.
+        $contextObject = $context['object'] ?? null;
+        $permissionSubject = $object ?? ($contextObject instanceof AbstractObject ? $contextObject : null);
+
         $context['object'] = $object;
 
         if ($layout instanceof LayoutDefinitionEnrichmentInterface) {
@@ -1062,9 +1063,9 @@ class Service extends Model\Element\Service
 
         if ($layout instanceof Model\DataObject\ClassDefinition\Data\Localizedfields || $layout instanceof Model\DataObject\ClassDefinition\Data\Classificationstore && $layout->localized === true) {
             $user = self::getUser($user);
-            if (!$user->isAdmin() && ($context['purpose'] ?? null) !== 'gridconfig' && $object) {
-                $allowedView = self::getLanguagePermissions($object, $user, 'lView');
-                $allowedEdit = self::getLanguagePermissions($object, $user, 'lEdit');
+            if (!$user->isAdmin() && $permissionSubject) {
+                $allowedView = self::getLanguagePermissions($permissionSubject, $user, 'lView');
+                $allowedEdit = self::getLanguagePermissions($permissionSubject, $user, 'lEdit');
                 self::enrichLayoutPermissions($layout, $allowedView, $allowedEdit, $user);
             }
 
@@ -1197,6 +1198,8 @@ class Service extends Model\Element\Service
             return null;
         }
 
+        // no snapshot lookup here on purpose: the admin edit view always shows freshly computed values,
+        // version snapshots are only used by getCalculatedFieldValue() (version previews/comparisons, getters)
         return DataObject\Service::useInheritedValues(true, static function () use ($fd, $object, $data) {
             switch ($fd->getCalculatorType()) {
                 case DataObject\ClassDefinition\Data\CalculatedValue::CALCULATOR_TYPE_CLASS:
@@ -1254,6 +1257,16 @@ class Service extends Model\Element\Service
             $object = $object->getObject();
         }
 
+        if ($object instanceof Concrete) {
+            $snapshot = $object->getCalculatedValueSnapshot();
+            if ($snapshot !== null) {
+                $snapshotKey = self::getCalculatedValueSnapshotKey($data);
+                if (array_key_exists($snapshotKey, $snapshot)) {
+                    return $snapshot[$snapshotKey];
+                }
+            }
+        }
+
         return DataObject\Service::useInheritedValues(true, static function () use ($object, $fd, $data) {
             switch ($fd->getCalculatorType()) {
                 case DataObject\ClassDefinition\Data\CalculatedValue::CALCULATOR_TYPE_CLASS:
@@ -1279,6 +1292,23 @@ class Service extends Model\Element\Service
                     return null;
             }
         });
+    }
+
+    /**
+     * Builds the key under which the value of a calculated field is stored in the
+     * calculated value snapshot of a version (see Concrete::getCalculatedValueSnapshot()).
+     *
+     * @internal
+     */
+    public static function getCalculatedValueSnapshotKey(Data\CalculatedValue $data): string
+    {
+        return implode('~', [
+            $data->getOwnerType(),
+            (string) $data->getOwnerName(),
+            (string) $data->getIndex(),
+            (string) $data->getPosition(),
+            $data->getFieldname(),
+        ]);
     }
 
     public static function getSystemFields(): array
