@@ -101,6 +101,8 @@ class Tree extends DAV\Tree
                         // Create a shell from filename/type only (no 'data'), then stream the
                         // content in separately: this avoids loading the whole file into memory
                         // and avoids Asset::create()'s mime-detection consuming the source stream.
+                        // Unlike the with-'data' variant, create() honors 'type' when no data is
+                        // passed, so it still picks the right concrete asset class.
                         $asset = Asset::create($sourceAsset->getParentId(), [
                             'filename' => basename($destinationPath),
                             'type' => $sourceAsset->getType(),
@@ -110,6 +112,15 @@ class Tree extends DAV\Tree
                         // destination lives in the same folder as the source; set the path now
                         // so the permission check below sees the correct workspace location
                         $asset->setPath((string) $sourceAsset->getRealPath());
+
+                        // restore ownership and creation date from the snapshot, so the rebuilt
+                        // destination keeps them like the id (the mover only becomes the modifier)
+                        if (isset($logEntry['userOwner'])) {
+                            $asset->setUserOwner((int) $logEntry['userOwner']);
+                        }
+                        if (isset($logEntry['creationDate'])) {
+                            $asset->setCreationDate((int) $logEntry['creationDate']);
+                        }
 
                         // restore the deleted destination's own properties and metadata from the
                         // scalar snapshot, so they survive the delete + create + move round-trip
@@ -133,6 +144,15 @@ class Tree extends DAV\Tree
                         throw new NotFound('Source asset not found');
                     }
                 }
+
+                // Only require the "rename" permission when the filename actually changes. On the
+                // overwrite paths above $asset is resolved from the destination, so setFilename()
+                // below is a no-op there and the MOVE is not a rename - gating it would break the
+                // safe-save flow of third party software described above.
+                if ($asset->getFilename() !== basename($destinationPath) && !$asset->isAllowed('rename', $user)) {
+                    throw new Forbidden('Missing "rename" permission');
+                }
+
                 $asset->setFilename(basename($destinationPath));
             } else {
                 $asset = Asset::getByPath('/' . $sourcePath);
@@ -148,6 +168,13 @@ class Tree extends DAV\Tree
                 $parentPath = $parent->getRealFullPath();
                 $asset->setPath($parentPath === '/' ? '/' : $parentPath . '/');
                 $asset->setParentId($parent->getId());
+
+                // GHSA-3hv6-4774-vpmf applies here too: the rename half of a move+rename is
+                // gated on the "rename" permission (a pure move keeps the name and is not)
+                if ($asset->getFilename() !== basename($destinationPath) && !$asset->isAllowed('rename', $user)) {
+                    throw new Forbidden('Missing "rename" permission');
+                }
+
                 $asset->setFilename(basename($destinationPath));
             }
 
@@ -184,6 +211,9 @@ class Tree extends DAV\Tree
      * Rebuilds an asset's own properties from the scalar rows captured in the delete log
      * (see Asset\WebDAV\File::delete()). Mirrors how Asset\Dao::getProperties() hydrates
      * properties from the database, so setDataFromResource() receives the raw scalar value.
+     * For date-type properties that hydration is not instantiation-free: their `data` column
+     * holds a serialized datetime string which setDataFromResource() unserializes - the same
+     * standard path normal property loading uses.
      *
      * cid/cpath are intentionally not set here: Asset::update() assigns them from the target
      * asset when the properties are persisted on save().
@@ -198,13 +228,19 @@ class Tree extends DAV\Tree
                 continue;
             }
 
+            $data = $row['data'] ?? null;
+            if ($data !== null && !is_string($data)) {
+                // properties.data is a string column; anything else is a malformed log entry
+                continue;
+            }
+
             $name = (string) ($row['name'] ?? '');
 
             $property = new Property();
             $property->setType((string) ($row['type'] ?? ''));
             $property->setName($name);
             $property->setCtype('asset');
-            $property->setDataFromResource($row['data'] ?? null);
+            $property->setDataFromResource($data);
             $property->setInherited(false);
             $property->setInheritable((bool) ($row['inheritable'] ?? false));
 
