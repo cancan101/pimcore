@@ -68,6 +68,24 @@ pimcore.bundle.search.element.selector.asset = Class.create(pimcore.bundle.searc
             })]
         };
 
+        // path filter, optionally pre-filled from the field's configured search path
+        // (soft default: visible and can be changed or cleared by the user)
+        compositeConfig.items.push({
+            xtype: "textfield",
+            name: "path",
+            width: 250,
+            emptyText: t("path"),
+            value: (this.parent.config && this.parent.config.searchPath) ? this.parent.config.searchPath : "",
+            enableKeyEvents: true,
+            listeners: {
+                "keydown" : function (field, key) {
+                    if (key.getKey() == key.ENTER) {
+                        this.search();
+                    }
+                }.bind(this)
+            }
+        });
+
         // check for restrictions
         let possibleRestrictions = pimcore.globalmanager.get('asset_search_types');
         let filterStore = [];
@@ -353,6 +371,7 @@ pimcore.bundle.search.element.selector.asset = Class.create(pimcore.bundle.searc
         proxy.setExtraParam("query", query);
         proxy.setExtraParam("type", 'asset');
         proxy.setExtraParam("subtype", formValues.subtype);
+        proxy.setExtraParam("path", formValues.path);
 
         if (this.parent.config && this.parent.config.context) {
             proxy.setExtraParam("context", Ext.encode(this.parent.config.context));

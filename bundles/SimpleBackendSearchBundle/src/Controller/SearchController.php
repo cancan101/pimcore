@@ -233,6 +233,15 @@ class SearchController extends UserAwareController
             $conditionParts[] = '( subtype IN (' . implode(',', $conditionClassnameParts) . ') )';
         }
 
+        // filtering by path prefix (e.g. pre-filled from the searchPath option of image fields)
+        if (!empty($allParams['path']) && is_string($allParams['path'])) {
+            $path = rtrim($allParams['path'], '/');
+            if ($path !== '') {
+                $conditionParts[] = '( fullpath = ' . $db->quote($path)
+                    . ' OR fullpath LIKE ' . $db->quote(Helper::escapeLike($path) . '/%') . ' )';
+            }
+        }
+
         //filtering for tags
         if (!empty($allParams['tagIds'])) {
             $tagIds = $allParams['tagIds'];
