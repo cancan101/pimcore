@@ -31,8 +31,10 @@ class WebDavTest extends ModelTestCase
 
     protected function tearDown(): void
     {
-        if (file_exists(Service::getDeleteLogFile())) {
-            unlink(Service::getDeleteLogFile());
+        foreach ([Service::getDeleteLogFile(), Service::getDeleteLogFile() . '.lock'] as $file) {
+            if (file_exists($file)) {
+                unlink($file);
+            }
         }
 
         parent::tearDown();
@@ -78,5 +80,50 @@ class WebDavTest extends ModelTestCase
 
         $this->assertArrayNotHasKey('/stale', $log);
         $this->assertArrayHasKey('/fresh', $log);
+    }
+
+    /**
+     * addDeleteLogEntry() must merge into the existing log, not replace it - this is the
+     * lost-update protection that File::delete() relies on for concurrent WebDAV requests.
+     */
+    public function testAddDeleteLogEntryPreservesExistingEntries(): void
+    {
+        Service::addDeleteLogEntry('/first.jpg', ['id' => 1, 'timestamp' => time()]);
+        Service::addDeleteLogEntry('/second.jpg', ['id' => 2, 'timestamp' => time()]);
+
+        $log = Service::getDeleteLog();
+
+        $this->assertSame(1, $log['/first.jpg']['id'] ?? null);
+        $this->assertSame(2, $log['/second.jpg']['id'] ?? null);
+    }
+
+    /**
+     * Re-adding the same path overwrites the previous entry.
+     */
+    public function testAddDeleteLogEntryOverwritesSamePath(): void
+    {
+        Service::addDeleteLogEntry('/same.jpg', ['id' => 1, 'timestamp' => time()]);
+        Service::addDeleteLogEntry('/same.jpg', ['id' => 2, 'timestamp' => time()]);
+
+        $log = Service::getDeleteLog();
+
+        $this->assertSame(2, $log['/same.jpg']['id'] ?? null);
+    }
+
+    /**
+     * Adding an entry must not resurrect stale entries already on disk.
+     */
+    public function testAddDeleteLogEntryPrunesStaleEntries(): void
+    {
+        Service::saveDeleteLog([
+            '/stale' => ['id' => 1, 'timestamp' => time() - 60],
+        ]);
+
+        Service::addDeleteLogEntry('/fresh.jpg', ['id' => 2, 'timestamp' => time()]);
+
+        $log = Service::getDeleteLog();
+
+        $this->assertArrayNotHasKey('/stale', $log);
+        $this->assertArrayHasKey('/fresh.jpg', $log);
     }
 }

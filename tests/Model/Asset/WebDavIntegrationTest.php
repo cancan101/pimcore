@@ -357,6 +357,28 @@ class WebDavIntegrationTest extends ModelTestCase
         $this->assertSame('NEW', $restored->getData());
     }
 
+    /**
+     * A cross-directory MOVE that also renames must apply the new filename at the destination,
+     * not silently keep the source name.
+     */
+    public function testMoveAcrossDirectoriesWithRename(): void
+    {
+        $target = TestHelper::createAssetFolder();
+        $asset = $this->createFileAssetIn($this->root, 'cross-src.txt', 'content');
+        $id = $asset->getId();
+
+        $this->newTree()->move(
+            $this->davPath($asset),
+            ltrim($target->getRealFullPath() . '/cross-renamed.txt', '/')
+        );
+
+        $this->assertNull(Asset::getByPath($this->root->getRealFullPath() . '/cross-src.txt'));
+        $moved = Asset::getByPath($target->getRealFullPath() . '/cross-renamed.txt');
+        $this->assertInstanceOf(Asset::class, $moved);
+        $this->assertSame($id, $moved->getId());
+        $this->assertSame($target->getId(), $moved->getParentId());
+    }
+
     public function testMoveWithMissingSourceThrowsNotFound(): void
     {
         $this->expectException(NotFound::class);

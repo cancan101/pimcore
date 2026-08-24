@@ -36,7 +36,10 @@ class Tree extends DAV\Tree
      *  2. the destination was just deleted and is still in the delete log -> re-create it from
      *     the source content while reusing the deleted id (see Asset\WebDAV\File::delete());
      *  3. neither -> a plain rename of the source.
-     * Across directories it is a plain move of the source into the destination folder.
+     * Across directories it is a plain move of the source into the destination folder, and a
+     * rename may be applied at the same time (a WebDAV MOVE can move and rename in one operation).
+     * Sabre deletes any existing destination before calling move(), so the destination never
+     * exists here and there is no cross-directory overwrite case to handle.
      *
      * The delete-log branch exists to support clients (e.g. Photoshop) that replace a file via
      * delete + create + move instead of an overwrite. That log is a best-effort, ~30s-lived
@@ -76,7 +79,7 @@ class Tree extends DAV\Tree
                     if (!$sourceAsset) {
                         throw new NotFound('Source asset not found');
                     }
-                    $asset->setData($sourceAsset->getData());
+                    $asset->setStream($sourceAsset->getStream());
 
                 }
 
@@ -95,13 +98,17 @@ class Tree extends DAV\Tree
                     $logEntry = $log['/' . $destinationPath];
                     $restoredId = $logEntry['id'] ?? null;
                     if ($restoredId !== null) {
-                        // no 'type' here: Asset::create() ignores a passed type when 'data' is
-                        // present and derives the concrete class from the detected mime type
+                        // Create a shell from filename/type only (no 'data'), then stream the
+                        // content in separately: this avoids loading the whole file into memory
+                        // and avoids Asset::create()'s mime-detection consuming the source stream.
+                        // Unlike the with-'data' variant, create() honors 'type' when no data is
+                        // passed, so it still picks the right concrete asset class.
                         $asset = Asset::create($sourceAsset->getParentId(), [
                             'filename' => basename($destinationPath),
-                            'data' => $sourceAsset->getData(),
+                            'type' => $sourceAsset->getType(),
                         ], false);
                         $asset->setId((int) $restoredId);
+                        $asset->setStream($sourceAsset->getStream());
                         // destination lives in the same folder as the source; set the path now
                         // so the permission check below sees the correct workspace location
                         $asset->setPath((string) $sourceAsset->getRealPath());
@@ -155,8 +162,20 @@ class Tree extends DAV\Tree
                     throw new NotFound('Source asset or destination folder not found');
                 }
 
-                $asset->setPath($parent->getRealFullPath() . '/');
+                // Sabre deletes an existing destination (which writes the delete log) BEFORE
+                // calling move(), so across directories this is always a plain move of the
+                // source; a rename may be applied at the same time (basename may differ).
+                $parentPath = $parent->getRealFullPath();
+                $asset->setPath($parentPath === '/' ? '/' : $parentPath . '/');
                 $asset->setParentId($parent->getId());
+
+                // GHSA-3hv6-4774-vpmf applies here too: the rename half of a move+rename is
+                // gated on the "rename" permission (a pure move keeps the name and is not)
+                if ($asset->getFilename() !== basename($destinationPath) && !$asset->isAllowed('rename', $user)) {
+                    throw new Forbidden('Missing "rename" permission');
+                }
+
+                $asset->setFilename(basename($destinationPath));
             }
 
             if (isset($parent)) {
