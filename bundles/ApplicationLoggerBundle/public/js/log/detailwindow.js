@@ -26,7 +26,7 @@ pimcore.bundle.applicationlogger.log.detailwindow = Class.create({
         if(!this.detailWindow) {
             this.detailWindow = new Ext.Window({
 				width: 600,
-				height: 420,
+				height: 450,
                 iconCls: "pimcore_icon_log",
                 title: t('log_detailinformation'),
 				closeAction:'close',
@@ -83,6 +83,14 @@ pimcore.bundle.applicationlogger.log.detailwindow = Class.create({
             name: "component",
             readOnly: true,
             value: this.data.component,
+            width: 540
+        });
+        items.push({
+            xtype: "textfield",
+            fieldLabel: t('log_source'),
+            name: "source",
+            readOnly: true,
+            value: this.data.source,
             width: 540
         });
 
