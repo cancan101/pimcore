@@ -1,12 +1,22 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * This source file is available under the terms of the
+ * Pimcore Open Core License (POCL)
+ * Full copyright and license information is available in
+ * LICENSE.md which is distributed with this source code.
+ *
+ *  @copyright  Copyright (c) Pimcore GmbH (https://www.pimcore.com)
+ *  @license    Pimcore Open Core License (POCL)
+ */
+
 namespace Pimcore\Tests\Model\DataType;
 
 use Pimcore\Model\Asset;
 use Pimcore\Model\DataObject;
 use Pimcore\Tests\Support\Util\TestHelper;
-use Pimcore\Tests\Test\ModelTestCase;
+use Pimcore\Tests\Support\Test\ModelTestCase;
 
 class AdvancedManyToManyAssetRelationEditModeTest extends ModelTestCase
 {
@@ -24,7 +34,8 @@ class AdvancedManyToManyAssetRelationEditModeTest extends ModelTestCase
 
         $this->assertCount(1, $result);
         $this->assertSame($asset->getId(), $result[0]['id']);
-        $this->assertArrayHasKey('fullpath', $result[0]);
+        $this->assertArrayHasKey('path', $result[0], 'the row shape follows the parent, which emits path');
+        $this->assertSame($asset->getRealFullPath(), $result[0]['path']);
         $this->assertSame('test-value', $result[0]['meta1']);
         $this->assertArrayHasKey('rowId', $result[0]);
     }
@@ -57,7 +68,7 @@ class AdvancedManyToManyAssetRelationEditModeTest extends ModelTestCase
         $fd->setColumns([['position' => 1, 'key' => 'meta1', 'type' => 'text', 'label' => 'Meta 1']]);
 
         $result = $fd->getDataFromEditmode([
-            ['id' => $asset->getId(), 'meta1' => 'from-edit'],
+            ['id' => $asset->getId(), 'type' => 'asset', 'meta1' => 'from-edit'],
         ]);
 
         $this->assertCount(1, $result);
