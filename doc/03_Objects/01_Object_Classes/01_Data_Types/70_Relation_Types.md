@@ -102,6 +102,13 @@ You can enable inline download of assets from relations if you check the "Allow 
 If the relation is an asset, it will be directly downloaded. If the relation is a folder, a zip file will  
 be downloaded.
 
+## Disable inline upload of assets
+By default, relations that allow assets show an upload button in the field toolbar which uploads a new
+asset to the configured upload path and directly adds it to the relation. If you want users to only relate assets
+that already exist (e.g. to make sure assets are organized in the correct place first instead of ending up in a
+default upload path), uncheck the "Allow inline upload" checkbox in the class definition. This option is available for
+the many-to-one relation, the many-to-many relation and the advanced many-to-many relation.
+
 ## Disable clear complete relation
 If you want to disable the possibility to clear the whole relation, you can uncheck the checkbox "Allow to clear all relations of this field"  
 in the classdefinition.

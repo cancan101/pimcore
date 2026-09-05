@@ -42,6 +42,11 @@ class ManyToOneRelation extends AbstractRelations implements QueryResourcePersis
 
     /**
      * @internal
+     */
+    public bool $assetInlineUploadAllowed = true;
+
+    /**
+     * @internal
      *
      */
     public string $assetUploadPath;
@@ -405,6 +410,21 @@ class ManyToOneRelation extends AbstractRelations implements QueryResourcePersis
     public function getAssetInlineDownloadAllowed(): bool
     {
         return $this->assetInlineDownloadAllowed;
+    }
+
+    /**
+     * @return $this
+     */
+    public function setAssetInlineUploadAllowed(bool $assetInlineUploadAllowed): static
+    {
+        $this->assetInlineUploadAllowed = $assetInlineUploadAllowed;
+
+        return $this;
+    }
+
+    public function getAssetInlineUploadAllowed(): bool
+    {
+        return $this->assetInlineUploadAllowed;
     }
 
     /**
