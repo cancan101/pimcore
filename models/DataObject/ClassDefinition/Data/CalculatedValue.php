@@ -66,6 +66,14 @@ class CalculatedValue extends Data implements QueryResourcePersistenceAwareInter
      */
     public int $columnLength = 190;
 
+    /**
+     * Declares the calculation a pure function of the object's own persisted data, so the
+     * stored/indexed snapshot is trustworthy for filtering and sorting (see grid listings).
+     *
+     * @internal
+     */
+    public bool $safeForFiltering = false;
+
     public function getElementType(): string
     {
         return $this->elementType;
@@ -98,6 +106,16 @@ class CalculatedValue extends Data implements QueryResourcePersistenceAwareInter
         }
 
         return $this;
+    }
+
+    public function getSafeForFiltering(): bool
+    {
+        return $this->safeForFiltering;
+    }
+
+    public function setSafeForFiltering(bool $safeForFiltering): void
+    {
+        $this->safeForFiltering = $safeForFiltering;
     }
 
     public function getCalculatorClass(): string
