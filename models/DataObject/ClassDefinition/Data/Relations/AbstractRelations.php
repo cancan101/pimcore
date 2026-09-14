@@ -54,12 +54,20 @@ abstract class AbstractRelations extends Data implements
     public ?string $displayMode = null;
 
     /**
-     * Optional path formatter class
-     *
+     * @internal
+     */
+    public string $pathFormatterType = 'class';
+
+    /**
      * @internal
      *
      */
     public ?string $pathFormatterClass = null;
+
+    /**
+     * @internal
+     */
+    public ?string $pathFormatterExpression = null;
 
     /**
      * @return array<array{classes: string}>
@@ -376,6 +384,16 @@ abstract class AbstractRelations extends Data implements
         return $data;
     }
 
+    public function getPathFormatterType(): string
+    {
+        return $this->pathFormatterType;
+    }
+
+    public function setPathFormatterType(string $pathFormatterType): void
+    {
+        $this->pathFormatterType = $pathFormatterType;
+    }
+
     public function getPathFormatterClass(): ?string
     {
         return $this->pathFormatterClass;
@@ -386,6 +404,25 @@ abstract class AbstractRelations extends Data implements
         $this->pathFormatterClass = $pathFormatterClass;
     }
 
+    public function getPathFormatterExpression(): ?string
+    {
+        return $this->pathFormatterExpression;
+    }
+
+    public function setPathFormatterExpression(?string $pathFormatterExpression): void
+    {
+        $this->pathFormatterExpression = $pathFormatterExpression;
+    }
+
+    public function hasPathFormatter(): bool
+    {
+        if ($this->pathFormatterType === 'expression') {
+            return !empty($this->pathFormatterExpression);
+        }
+
+        return !empty($this->pathFormatterClass);
+    }
+
     public function getDataForSearchIndex(DataObject\Localizedfield|DataObject\Fieldcollection\Data\AbstractData|DataObject\Objectbrick\Data\AbstractData|DataObject\Concrete $object, array $params = []): string
     {
         return '';
@@ -394,6 +431,10 @@ abstract class AbstractRelations extends Data implements
     public function getNicePath(array $gridData, ?Concrete $object = null, array $params = []): ?string
     {
         if (!empty($gridData) && $object) {
+            if ($this->pathFormatterType === 'expression' && !empty($this->pathFormatterExpression)) {
+                return $this->evaluatePathFormatterExpression($gridData, $object, $params);
+            }
+
             $pathFormatter = DataObject\ClassDefinition\Helper\PathFormatterResolver::resolvePathFormatter(
                 $this->getPathFormatterClass()
             );
@@ -404,6 +445,27 @@ abstract class AbstractRelations extends Data implements
         }
 
         return null;
+    }
+
+    public function evaluatePathFormatterExpression(array $target, ?Concrete $object = null, array $params = []): ?string
+    {
+        $container = \Pimcore::getContainer();
+        $expressionLanguage = $container->get('pimcore.calculated_value.expression_language');
+
+        try {
+            return (string) $expressionLanguage->evaluate(
+                $this->getPathFormatterExpression(),
+                [
+                    'source' => $object,
+                    'target' => $target,
+                    'params' => $params,
+                ]
+            );
+        } catch (\Exception $e) {
+            Logger::error('Error evaluating path formatter expression: ' . $e->getMessage());
+
+            return null;
+        }
     }
 
     public function appendData(?array $existingData, array $additionalData): ?array
