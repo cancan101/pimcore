@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace Pimcore\Model\Asset\Thumbnail;
 
 use Exception;
+use League\Flysystem\FilesystemException;
 use League\Flysystem\FilesystemOperator;
 use League\Flysystem\UnableToReadFile;
 use Pimcore;
@@ -90,31 +91,72 @@ trait ImageThumbnailTrait
     private static array $supportedFormats = [];
 
     /**
-     * @return null|resource
+     * Returns a stream of the thumbnail file, generating the thumbnail if necessary.
+     *
+     * A thumbnail file that is missing from the thumbnail storage although the path reference
+     * (e.g. from the thumbnail status cache) claims it exists is regenerated on the fly: the stale
+     * status cache entry is invalidated, the memoized state of this instance is reset and the
+     * thumbnail is resolved again, so subsequent calls like getPath() or exists() reflect the
+     * regenerated thumbnail as well.
+     *
+     * @return null|resource null if there is no file to stream, e.g. because the generation failed
+     *
+     * @throws UnableToReadFile if the file exists but cannot be read, or if its existence cannot be determined
      */
     public function getStream()
     {
         $pathReference = $this->getPathReference(false);
-        if ($pathReference['type'] === 'asset') {
-            return $this->asset->getStream();
-        } elseif (isset($pathReference['storagePath'])) {
+
+        if ($pathReference['type'] !== 'asset' && isset($pathReference['storagePath'])) {
             $storage = $this->getThumbnailStorage();
 
             try {
                 return $storage->readStream($pathReference['storagePath']);
             } catch (UnableToReadFile $e) {
+                if ($this->existsOnStorageAfterFailedRead($storage, $pathReference['storagePath'])) {
+                    // reading failed although the file still exists (e.g. permission, I/O or backend
+                    // availability problems) - not a stale reference, so keep the status cache intact
+                    throw $e;
+                }
+
                 Logger::warning($e->getMessage());
 
-                // the file is missing from the thumbnail storage although the path reference claims
-                // it exists, e.g. because of a stale entry in the thumbnail status cache. Invalidate
-                // the entry so the thumbnail is regenerated on the next request instead of failing again.
+                // the file no longer exists on the thumbnail storage, e.g. a stale entry in the
+                // thumbnail status cache, so invalidate it
                 if (($cacheOwner = $this->getThumbnailStatusCacheOwner()) && $this->config) {
                     $cacheOwner->getDao()->deleteFromThumbnailCache($this->config->getName(), basename($pathReference['storagePath']));
                 }
+
+                // the path reference claiming the file exists is memoized on this (potentially reused)
+                // instance, reset it and resolve the thumbnail again right away: this regenerates the
+                // missing file, so the detecting request already serves the image instead of a not-found
+                // response (which e.g. a CDN could latch onto until the next request)
+                $this->reset();
+                $pathReference = $this->getPathReference(false);
             }
         }
 
+        if ($pathReference['type'] === 'asset') {
+            return $this->asset->getStream();
+        } elseif (isset($pathReference['storagePath'])) {
+            // a read failure of a just (re)generated file is a storage problem and surfaces as such
+            return $this->getThumbnailStorage()->readStream($pathReference['storagePath']);
+        }
+
         return null;
+    }
+
+    /**
+     * whether the file still exists on the storage after a failed read,
+     * treating an indeterminate result as existing (storage-side problem)
+     */
+    private function existsOnStorageAfterFailedRead(FilesystemOperator $storage, string $storagePath): bool
+    {
+        try {
+            return $storage->fileExists($storagePath);
+        } catch (FilesystemException) {
+            return true;
+        }
     }
 
     /**
