@@ -50,7 +50,7 @@ class ServiceTest extends TestCase
         $uri = '/testimage/1/image-thumb__1__unittest/testimage.jpg';
 
         $storage = $this->createMock(FilesystemOperator::class);
-        $storage->method('fileExists')->willThrowException(new UnableToCheckFileExistence('Unable to check file existence for: ' . $uri));
+        $storage->method('fileExists')->willThrowException(UnableToCheckFileExistence::forLocation($uri));
         $storage->method('readStream')->willThrowException(UnableToReadFile::fromLocation($uri));
 
         $this->expectException(UnableToReadFile::class);
