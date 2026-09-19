@@ -95,12 +95,50 @@ class TranslatorTest extends TestCase
         parent::setUp();
 
         $this->translator = Pimcore::getContainer()->get(TranslatorInterface::class);
+        $this->diagnostics = [];
+        $this->snapshot('before fixtures');
         $this->addTranslations();
+        $this->snapshot('after fixtures');
 
         // the translator is shared with everything that ran before this test (other suites included) and
         // builds a domain/locale catalogue only once - make sure it sees the fixtures written above and
         // nothing that was translated earlier in the run
         $this->resetTranslatorState();
+        $this->snapshot('after reset');
+    }
+
+    /** TEMPORARY DIAGNOSTICS */
+    private array $diagnostics = [];
+
+    /** TEMPORARY DIAGNOSTICS */
+    private function snapshot(string $stage): void
+    {
+        $lines = ['[' . $stage . ']'];
+        $lines[] = '  initialized: ' . json_encode(array_keys((new ReflectionProperty(Translator::class, 'initializedCatalogues'))->getValue($this->translator)));
+        $wrapped = $this->findWrappedSymfonyTranslator($this->translator);
+        $catalogues = $wrapped ? (new ReflectionProperty(SymfonyTranslator::class, 'catalogues'))->getValue($wrapped) : [];
+        foreach ($catalogues as $locale => $catalogue) {
+            $messages = $catalogue->all('messages');
+            $lines[] = sprintf(
+                '  symfony %s#%d: simple_key=%s fallback_key=%s',
+                $locale,
+                spl_object_id($catalogue),
+                array_key_exists('simple_key', $messages) ? var_export($messages['simple_key'], true) : 'MISSING',
+                array_key_exists('fallback_key', $messages) ? var_export($messages['fallback_key'], true) : 'MISSING'
+            );
+        }
+        $lines[] = '  db fallback_key: ' . json_encode(Db::get()->fetchAllAssociative('SELECT `language`, `text` FROM translations_messages WHERE `key` = ?', ['fallback_key']));
+        $this->diagnostics[] = implode("\n", $lines);
+    }
+
+    /** TEMPORARY DIAGNOSTICS: fingerprint of the translator state, to detect saves that touch it */
+    private function stateFingerprint(): string
+    {
+        $wrapped = $this->findWrappedSymfonyTranslator($this->translator);
+        $catalogues = $wrapped ? (new ReflectionProperty(SymfonyTranslator::class, 'catalogues'))->getValue($wrapped) : [];
+        $initialized = (new ReflectionProperty(Translator::class, 'initializedCatalogues'))->getValue($this->translator);
+
+        return json_encode(array_keys($catalogues)) . '|' . count($initialized);
     }
 
     protected function tearDown(): void
@@ -148,11 +186,17 @@ class TranslatorTest extends TestCase
 
     private function addTranslations(): void
     {
+        $fingerprint = $this->stateFingerprint();
         foreach ($this->locales as $locale => $fallback) {
             foreach ($this->translations[$locale] as $transKey => $trans) {
                 $t = Translation::getByKey($transKey, Translation::DOMAIN_DEFAULT, true);
                 $t->addTranslation($locale, $trans ?? '');
                 $t->save();
+
+                if (($newFingerprint = $this->stateFingerprint()) !== $fingerprint) {
+                    $this->snapshot("translator state changed while saving $locale/$transKey");
+                    $fingerprint = $newFingerprint;
+                }
             }
         }
     }
@@ -222,19 +266,27 @@ class TranslatorTest extends TestCase
         //Translate en
         $this->translator->setLocale('en');
         $this->assertEquals($this->translations['en']['simple_key'], $this->translator->trans('simple_key'));
+        $this->snapshot('after en/simple_key');
 
         //Translate de
         $this->translator->setLocale('de');
         $this->assertEquals($this->translations['de']['simple_key'], $this->translator->trans('simple_key'));
+        $this->snapshot('after de/simple_key');
 
         //Translate fr
         $this->translator->setLocale('fr');
         $this->assertEquals($this->translations['fr']['simple_key'], $this->translator->trans('simple_key'));
+        $this->snapshot('after fr/simple_key');
 
         //Returns Fallback("en") value
         $this->translator->setLocale('de');
         $actual = $this->translator->trans('fallback_key');
-        $this->assertEquals($this->translations['en']['fallback_key'], $actual, $this->describeTranslatorState('fallback_key'));
+        $this->snapshot('after de/fallback_key');
+        $this->assertEquals(
+            $this->translations['en']['fallback_key'],
+            $actual,
+            implode("\n", $this->diagnostics) . "\n" . $this->describeTranslatorState('fallback_key')
+        );
     }
 
     /**
