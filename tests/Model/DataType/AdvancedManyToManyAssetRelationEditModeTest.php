@@ -1,12 +1,22 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * This source file is available under the terms of the
+ * Pimcore Open Core License (POCL)
+ * Full copyright and license information is available in
+ * LICENSE.md which is distributed with this source code.
+ *
+ *  @copyright  Copyright (c) Pimcore GmbH (https://www.pimcore.com)
+ *  @license    Pimcore Open Core License (POCL)
+ */
+
 namespace Pimcore\Tests\Model\DataType;
 
-use Pimcore\Model\Asset;
+use InvalidArgumentException;
 use Pimcore\Model\DataObject;
 use Pimcore\Tests\Support\Util\TestHelper;
-use Pimcore\Tests\Test\ModelTestCase;
+use Pimcore\Tests\Support\Test\ModelTestCase;
 
 class AdvancedManyToManyAssetRelationEditModeTest extends ModelTestCase
 {
@@ -24,7 +34,8 @@ class AdvancedManyToManyAssetRelationEditModeTest extends ModelTestCase
 
         $this->assertCount(1, $result);
         $this->assertSame($asset->getId(), $result[0]['id']);
-        $this->assertArrayHasKey('fullpath', $result[0]);
+        $this->assertArrayHasKey('path', $result[0], 'the row shape follows the parent, which emits path');
+        $this->assertSame($asset->getRealFullPath(), $result[0]['path']);
         $this->assertSame('test-value', $result[0]['meta1']);
         $this->assertArrayHasKey('rowId', $result[0]);
     }
@@ -49,6 +60,28 @@ class AdvancedManyToManyAssetRelationEditModeTest extends ModelTestCase
         $this->assertSame('a note', $result[0]['note']);
     }
 
+    public function testGetDataForEditmodeReadsMetadataCollidingWithAssetGetter(): void
+    {
+        // Asset\Image::getThumbnail() exists; a visible field named "thumbnail" must still resolve to the
+        // metadata value and never invoke the getter (which on Asset\Video would even throw for lack of an argument)
+        $asset = TestHelper::createImageAsset();
+        $asset->addMetadata('thumbnail', 'input', 'metadata thumbnail value');
+        $asset->save();
+
+        $fd = new DataObject\ClassDefinition\Data\AdvancedManyToManyAssetRelation();
+        $fd->setVisibleFields('thumbnail');
+        $fd->setColumns([['position' => 1, 'key' => 'note', 'type' => 'text', 'label' => 'Note']]);
+
+        $metaData = new DataObject\Data\ElementMetadata('testField', ['note'], $asset);
+        $metaData->setNote('a note');
+
+        $result = $fd->getDataForEditmode([$metaData]);
+
+        $this->assertCount(1, $result);
+        $this->assertSame('metadata thumbnail value', $result[0]['thumbnail']);
+        $this->assertSame('a note', $result[0]['note']);
+    }
+
     public function testGetDataFromEditmodeReturnsElementMetadata(): void
     {
         $asset = TestHelper::createImageAsset();
@@ -57,13 +90,57 @@ class AdvancedManyToManyAssetRelationEditModeTest extends ModelTestCase
         $fd->setColumns([['position' => 1, 'key' => 'meta1', 'type' => 'text', 'label' => 'Meta 1']]);
 
         $result = $fd->getDataFromEditmode([
-            ['id' => $asset->getId(), 'meta1' => 'from-edit'],
+            ['id' => $asset->getId(), 'type' => 'asset', 'meta1' => 'from-edit'],
         ]);
 
         $this->assertCount(1, $result);
         $this->assertInstanceOf(DataObject\Data\ElementMetadata::class, $result[0]);
         $this->assertSame($asset->getId(), $result[0]->getElement()->getId());
         $this->assertSame('from-edit', $result[0]->getMeta1());
+    }
+
+    public function testGetDataFromEditmodeInfersAssetTypeWhenMissing(): void
+    {
+        $asset = TestHelper::createImageAsset();
+
+        $fd = new DataObject\ClassDefinition\Data\AdvancedManyToManyAssetRelation();
+        $fd->setColumns([['position' => 1, 'key' => 'meta1', 'type' => 'text', 'label' => 'Meta 1']]);
+
+        // the diff editor hands back rows without a type; they are asset rows by definition
+        $result = $fd->getDataFromEditmode([
+            ['id' => $asset->getId(), 'meta1' => 'untyped'],
+        ]);
+
+        $this->assertCount(1, $result);
+        $this->assertInstanceOf(DataObject\Data\ElementMetadata::class, $result[0]);
+        $this->assertSame('asset', $result[0]->getElementType());
+        $this->assertSame($asset->getId(), $result[0]->getElement()->getId());
+        $this->assertSame('untyped', $result[0]->getMeta1());
+    }
+
+    public function testGetDataFromEditmodeIgnoresNonAssetRows(): void
+    {
+        $asset = TestHelper::createImageAsset();
+        $object = TestHelper::createEmptyObject();
+
+        $fd = new DataObject\ClassDefinition\Data\AdvancedManyToManyAssetRelation();
+        $fd->setColumns([['position' => 1, 'key' => 'meta1', 'type' => 'text', 'label' => 'Meta 1']]);
+
+        $result = $fd->getDataFromEditmode([
+            ['id' => $object->getId(), 'type' => 'object', 'meta1' => 'not-an-asset'],
+            ['id' => $asset->getId(), 'type' => 'asset', 'meta1' => 'an-asset'],
+        ]);
+
+        $this->assertCount(1, $result);
+        $this->assertSame('asset', $result[0]->getElementType());
+        $this->assertSame($asset->getId(), $result[0]->getElement()->getId());
+        $this->assertSame('an-asset', $result[0]->getMeta1());
+    }
+
+    public function testGetDataFromEditmodeReturnsNullForNullInput(): void
+    {
+        $fd = new DataObject\ClassDefinition\Data\AdvancedManyToManyAssetRelation();
+        $this->assertNull($fd->getDataFromEditmode(null));
     }
 
     public function testNormalizeDenormalizeRoundtrip(): void
@@ -83,6 +160,49 @@ class AdvancedManyToManyAssetRelationEditModeTest extends ModelTestCase
 
         $denormalized = $fd->denormalize($normalized);
         $this->assertCount(1, $denormalized);
+        $this->assertInstanceOf(DataObject\Data\ElementMetadata::class, $denormalized[0]);
         $this->assertSame($asset->getId(), $denormalized[0]->getElement()->getId());
+        $this->assertSame('round-trip', $denormalized[0]->getMeta1(), 'denormalize() must restore the relation metadata, not just the element');
+    }
+
+    public function testAddListingFilterAcceptsAssetAssetIdAndArray(): void
+    {
+        $asset = TestHelper::createImageAsset();
+
+        $fd = new DataObject\ClassDefinition\Data\AdvancedManyToManyAssetRelation();
+        $fd->setName('assetRelations');
+
+        foreach ([$asset, $asset->getId(), ['id' => $asset->getId()], ['id' => $asset->getId(), 'type' => 'asset']] as $data) {
+            $listing = new DataObject\Listing();
+            $fd->addListingFilter($listing, $data);
+
+            $conditionParams = $listing->getConditionParams();
+            $this->assertArrayHasKey('(`assetRelations` LIKE ?)', $conditionParams);
+            $this->assertSame('%,' . $asset->getId() . ',%', $conditionParams['(`assetRelations` LIKE ?)']['value']);
+        }
+    }
+
+    public function testAddListingFilterRejectsNonAssetElement(): void
+    {
+        $object = TestHelper::createEmptyObject();
+
+        $fd = new DataObject\ClassDefinition\Data\AdvancedManyToManyAssetRelation();
+        $fd->setName('assetRelations');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('does only support assets, object given');
+
+        $fd->addListingFilter(new DataObject\Listing(), $object);
+    }
+
+    public function testAddListingFilterRejectsNonAssetTypeInArray(): void
+    {
+        $fd = new DataObject\ClassDefinition\Data\AdvancedManyToManyAssetRelation();
+        $fd->setName('assetRelations');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('does only support assets, type "object" given');
+
+        $fd->addListingFilter(new DataObject\Listing(), ['id' => 1, 'type' => 'object']);
     }
 }
