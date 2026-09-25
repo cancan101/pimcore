@@ -16,6 +16,18 @@ The only data stored is the one in the object's query tables for being able to q
 > Values in the query table are only updated when the data object is saved. So be careful, the values in the query 
 > table might not be up-to-date depending on the calculation parameters.  
 
+### Safe for Filtering
+
+Because the stored value is only a snapshot taken when the object was saved, Pimcore cannot know whether it is
+trustworthy for querying: a calculator that depends on the current time, related objects, or external services
+produces stale snapshots, and filtering on those would silently return wrong results.
+
+If your calculation is a *pure function of the object's own persisted data*, you can declare that by enabling the
+**Safe for filtering** setting (`safeForFiltering`) on the field definition. Consumers such as the Studio grid use
+this declaration to offer filtering and sorting on the field. The contract is yours to uphold: the value is
+recomputed on each save of the object (and on reindex) and is otherwise assumed current — fields whose calculation
+depends on other objects, the clock, or external state must not be flagged.
+
 As display type in object editor three types are available: 
 - Input: Single line, displayed as read-only input field.
 - TextArea: Multi line, displayed as read-only text area.
