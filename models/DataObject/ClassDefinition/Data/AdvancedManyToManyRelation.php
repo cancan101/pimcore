@@ -389,7 +389,7 @@ class AdvancedManyToManyRelation extends ManyToManyRelation implements IdRewrite
     {
         $gridData = $this->getDataForEditmode($data, $object, $params);
 
-        if ($this->getPathFormatterClass() && !empty($gridData)) {
+        if ($this->hasPathFormatter() && !empty($gridData)) {
             $params['fd'] = $object->getClass()->getFieldDefinition($this->getName(), $params['context'] ?? []);
             foreach ($gridData as &$relatedElementData) {
                 $nicePath = $this->getNicePath($relatedElementData, $object, $params);
