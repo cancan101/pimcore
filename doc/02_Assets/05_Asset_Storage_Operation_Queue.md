@@ -110,6 +110,18 @@ pimcore:
 When disabled (the default), asset storages behave exactly as they did before this
 feature was introduced — there is no behavior change.
 
+If `pimcore.assets.frontend_prefixes.source` is configured and the prefix is served
+through Pimcore rather than pointing straight at the storage, also set
+`resolve_frontend_paths: false` — see [Frontend URLs](#frontend-urls):
+
+```yaml
+pimcore:
+    assets:
+        storage_operation_queue:
+            enabled: true
+            resolve_frontend_paths: false
+```
+
 ### 3. Verify the setup
 
 ```bash
@@ -137,6 +149,20 @@ during low-traffic hours — nothing runs it automatically.** Options:
 - `--id`: process only the given queue row.
 - `--max-runtime`: stop cleanly after this many seconds; any unfinished rows stay
   queued for the next run.
+- `--continue-on-error`: keep going after a failing row instead of ending the run.
+
+  **The default is to stop at the first error.** These operations are destructive and
+  the command normally runs unattended, so a failure is worth looking at before
+  thousands of further rows are attempted in the same state. A failure here is usually
+  the backend being unhappy - credentials, a permission the endpoint does not serve, a
+  quota - rather than one odd row, which means the rows after it would fail the same
+  way. The command exits non-zero and names the row it stopped on; everything it had
+  not reached stays queued for the next run.
+
+  Pass this option when an operator is watching a large one-off migration and would
+  rather the bulk proceeded, to read the errors afterwards. Note that even then a move
+  which could not complete still keeps an overlapping delete deferred - that delete
+  would otherwise destroy content the move has not relocated yet.
 
 A single run is guarded by a 24-hour, non-refreshing lock, so it is safe to schedule
 the command frequently — a run that finds the lock held (a previous run still in
@@ -239,13 +265,33 @@ Between the moment an operation is queued and the moment it is processed:
 ## Frontend URLs
 
 With `pimcore.assets.frontend_prefixes.source` configured, frontend URLs for original
-asset files — `Asset::getFrontendFullPath()`, and thumbnails that pass through the
-original file unmodified (for example an SVG thumbnail falling back to the source file)
-— point straight at the storage (e.g. a CDN or bucket) rather than being served through
-Pimcore. For such a URL under a pending move, the path is built from the still-valid
-physical (pre-move) path instead of the logical (post-move) path, so it keeps resolving
-correctly for the duration of the pending window, and automatically switches back to the
-logical path once the move is processed.
+asset files — `Asset::getFrontendFullPath()` (and `Asset::getFullPath()` in a frontend
+context), and thumbnails that pass through the original file unmodified (for example an
+SVG thumbnail falling back to the source file) — typically point straight at the storage
+(e.g. a CDN or bucket) rather than being served through Pimcore. For such a URL under a
+pending move, the path is built from the still-valid physical (pre-move) path instead of
+the logical (post-move) path, so it keeps resolving correctly for the duration of the
+pending window, and automatically switches back to the logical path once the move is
+processed.
+
+This translation is only correct when the prefix bypasses Pimcore. If the prefix is
+instead served **through Pimcore** — for example a route or controller that loads the
+asset by its path via `Asset::getByPath()` and streams it — the URL has to carry the
+current logical path: the asset is looked up by that path, and the queue-aware storage
+adapter resolves the physical location on read. For such installs disable the
+translation; frontend URLs then always reflect the current asset path, during a pending
+window as well as after processing:
+
+```yaml
+pimcore:
+    assets:
+        storage_operation_queue:
+            enabled: true
+            resolve_frontend_paths: false
+```
+
+`pimcore.assets.storage_operation_queue.resolve_frontend_paths` defaults to `true` and
+has no effect without a configured `frontend_prefixes.source`.
 
 `pimcore.assets.frontend_prefixes.thumbnail` URLs need no queue-awareness at all: a
 thumbnail requested at its post-move path is simply a not-yet-generated thumbnail, no

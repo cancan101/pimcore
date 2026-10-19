@@ -14,6 +14,8 @@ declare(strict_types=1);
 namespace Pimcore\Tests\Model\Asset;
 
 use League\Flysystem\FilesystemOperator;
+use League\Flysystem\UnableToReadFile;
+use League\Flysystem\UnableToRetrieveMetadata;
 use Pimcore;
 use Pimcore\Bundle\CoreBundle\Controller\PublicServicesController;
 use Pimcore\Config;
@@ -24,6 +26,7 @@ use Pimcore\Tests\Support\Util\TestHelper;
 use Pimcore\Tool\Storage;
 use Psr\Container\ContainerInterface;
 use ReflectionProperty;
+use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -449,5 +452,135 @@ class AssetThumbnailCacheTest extends TestCase
         } finally {
             $property->setValue($storageService, $originalLocator);
         }
+    }
+
+    public function testThumbnailActionRedirectsToPlaceholderOnGenerationFailure(): void
+    {
+        // valid JPEG magic bytes so the asset stays an image, but garbage image data
+        // so the thumbnail generation fails
+        $brokenAsset = TestHelper::createImageAsset('broken', "\xFF\xD8\xFF\xE0" . str_repeat('x', 128));
+
+        $controller = new PublicServicesController();
+        $request = new Request(attributes: [
+            'assetId' => $brokenAsset->getId(),
+            'thumbnailName' => $this->thumbnailName,
+            'filename' => 'broken.jpg',
+            'type' => 'image',
+            'prefix' => '',
+        ]);
+
+        $response = $controller->thumbnailAction($request);
+
+        $this->assertInstanceOf(RedirectResponse::class, $response);
+        $this->assertSame('/bundles/pimcoreadmin/img/filetype-not-supported.svg', $response->getTargetUrl());
+
+        // the public helper for custom asset delivery (see doc/02_Assets/02_Restricting_Public_Asset_Access.md)
+        // keeps its nullable contract for a failed generation as well, previously the placeholder
+        // path reference ended in a TypeError from writeStream(null) on the thumbnail storage
+        $uri = sprintf('/image-thumb__%d__%s/broken.jpg', $brokenAsset->getId(), $this->thumbnailName);
+        $this->assertNull(Asset\Service::getStreamedResponseByUri($uri));
+    }
+
+    public function testGetStreamInvalidatesStaleStatusCacheWhenFileMissingFromStorage(): void
+    {
+        $asset = $this->testAsset;
+        $thumbnailName = $this->thumbnailName;
+
+        /** @var Asset\Image $asset */
+        $thumbConfig = $asset->getThumbnail($thumbnailName);
+
+        //create the thumbnail file and fill the status cache
+        $thumbConfig->getPath(['deferredAllowed' => false]);
+        $pathReference = $thumbConfig->getPathReference(true);
+        $storagePath = $pathReference['storagePath'];
+        $filename = $thumbConfig->getFilename();
+
+        $thumbnailStorage = Storage::get('thumbnail');
+        $this->assertTrue($thumbnailStorage->fileExists($storagePath));
+        $this->assertNotNull($asset->getDao()->getCachedThumbnailModificationDate($thumbnailName, $filename));
+
+        //delete just the file on the file system, the status cache entry remains
+        $thumbnailStorage->delete($storagePath);
+
+        //the stale status cache entry makes a fresh thumbnail instance report the file as existing
+        $thumbnail = $asset->getThumbnail($thumbnailName);
+        $this->assertTrue($thumbnail->exists());
+
+        //previously threw an unhandled League\Flysystem\UnableToReadFile
+        $this->assertNull($thumbnail->getStream());
+
+        //the stale status cache entry got invalidated ...
+        $this->assertNull($asset->getDao()->getCachedThumbnailModificationDate($thumbnailName, $filename));
+
+        //... so the next request (a fresh thumbnail instance) no longer reports the missing file
+        //as existing and regenerates it instead
+        $thumbnail = $asset->getThumbnail($thumbnailName);
+        $this->assertFalse($thumbnail->exists());
+
+        $stream = $thumbnail->getStream();
+        $this->assertIsResource($stream);
+        fclose($stream);
+        $this->assertTrue($thumbnailStorage->fileExists($storagePath));
+        $this->assertNotNull($asset->getDao()->getCachedThumbnailModificationDate($thumbnailName, $filename));
+    }
+
+    public function testGetStreamedResponseByUriReturnsNullWhenTheThumbnailCannotBeRead(): void
+    {
+        [$uri, $storagePath] = $this->generateThumbnailAndBuildDeliveryUri();
+
+        //the storage reports the thumbnail as present and up to date, so both the direct delivery
+        //and the thumbnail generation behind it take the "already generated" path - but the read
+        //itself fails, e.g. because of a permission or I/O problem, or because the file was removed
+        //in between. ImageThumbnailTrait::getStream() deliberately rethrows in that case.
+        $storage = $this->createMock(FilesystemOperator::class);
+        $storage->method('fileExists')->willReturn(true);
+        $storage->method('lastModified')->willReturn(time());
+        $storage->method('fileSize')->willReturn(12345);
+        $storage->method('readStream')->willThrowException(UnableToReadFile::fromLocation($storagePath));
+
+        $this->withThumbnailStorage($storage, function () use ($uri) {
+            //the public helper for custom asset delivery (see
+            //doc/02_Assets/02_Restricting_Public_Asset_Access.md) is documented as returning
+            //?StreamedResponse, so the storage failure must not reach the calling project code
+            $this->assertNull(Asset\Service::getStreamedResponseByUri($uri));
+        });
+    }
+
+    public function testGetStreamedResponseByUriReturnsNullWhenThumbnailMetadataCannotBeRetrieved(): void
+    {
+        [$uri, $storagePath] = $this->generateThumbnailAndBuildDeliveryUri();
+
+        //the read succeeds but the storage cannot stat the file afterwards, which is what a briefly
+        //unavailable remote adapter looks like between two calls - the helper must not leak that either
+        $storage = $this->createMock(FilesystemOperator::class);
+        $storage->method('fileExists')->willReturn(true);
+        $storage->method('lastModified')->willReturn(time());
+        $storage->method('readStream')->willReturnCallback(static fn () => fopen('php://memory', 'rb'));
+        $storage->method('mimeType')->willReturn('image/jpeg');
+        $storage->method('fileSize')->willThrowException(UnableToRetrieveMetadata::fileSize($storagePath));
+
+        $this->withThumbnailStorage($storage, function () use ($uri) {
+            $this->assertNull(Asset\Service::getStreamedResponseByUri($uri));
+        });
+    }
+
+    /**
+     * generates the thumbnail of the test asset so the delivery under test takes the
+     * direct-delivery path, and returns its delivery uri and storage path
+     *
+     * @return array{string, string}
+     */
+    private function generateThumbnailAndBuildDeliveryUri(): array
+    {
+        /** @var Asset\Image $asset */
+        $asset = $this->testAsset;
+        $thumbnail = $asset->getThumbnail($this->thumbnailName);
+
+        $thumbnail->getPath(['deferredAllowed' => false]);
+        $storagePath = $thumbnail->getPathReference(true)['storagePath'];
+
+        $uri = sprintf('/image-thumb__%d__%s/%s', $asset->getId(), $this->thumbnailName, basename($storagePath));
+
+        return [$uri, $storagePath];
     }
 }
