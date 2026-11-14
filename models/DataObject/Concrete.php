@@ -26,8 +26,11 @@ use Pimcore\Model\DataObject;
 use Pimcore\Model\DataObject\ClassDefinition\Data\LazyLoadingSupportInterface;
 use Pimcore\Model\DataObject\ClassDefinition\Data\Link;
 use Pimcore\Model\DataObject\ClassDefinition\Data\Relations\AbstractRelations;
+use Pimcore\Model\DataObject\ClassDefinition\Helper\WysiwygPersistingScope;
 use Pimcore\Model\DataObject\Exception\InheritanceParentNotFoundException;
+use Pimcore\Model\Element\StructuredValidationException;
 use Pimcore\SystemSettingsConfig;
+use SplObjectStorage;
 
 /**
  * @method Model\DataObject\Concrete\Dao getDao()
@@ -90,6 +93,17 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
     protected bool $allLazyKeysMarkedAsLoaded = false;
 
     /**
+     * Values of calculated fields as of the time this instance was serialized into a version
+     * snapshot, keyed by DataObject\Service::getCalculatedValueSnapshotKey(). Only populated
+     * on instances restored from a version, never on live objects.
+     *
+     * @internal
+     *
+     * @var array<string, scalar|array|null>|null
+     */
+    protected ?array $__calculatedValueSnapshot = null;
+
+    /**
      * returns the class ID of the current object class
      *
      */
@@ -102,14 +116,41 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
 
     protected function update(?bool $isUpdate = null, array $params = []): void
     {
+        // the field getters used for the validation and by the dao must not reduce wysiwyg links to unpublished
+        // elements, whichever request or process saves the object
+        WysiwygPersistingScope::run(fn () => $this->updateObject($isUpdate, $params));
+    }
+
+    private function updateObject(?bool $isUpdate, array $params): void
+    {
         $fieldDefinitions = $this->getClass()->getFieldDefinitions();
 
         $validationExceptions = [];
+        /** @var SplObjectStorage<Model\Element\ValidationException, ClassDefinition\Data> $failedFields */
+        $failedFields = new SplObjectStorage();
 
         foreach ($fieldDefinitions as $fd) {
             try {
                 if ($fd instanceof DataObject\ClassDefinition\Data\Localizedfields) {
                     $this->__objectAwareFields['localizedfields'] = true;
+                }
+
+                if ($fd instanceof DataObject\ClassDefinition\Data\CalculatedValue) {
+                    // a calculated value is computed on read and never persisted from user input,
+                    // and CalculatedValue::checkValidity() is a no-op for that reason - including
+                    // for the mandatory check. Calling the getter here would run the calculator
+                    // for every calculated field on every save, only to discard the result.
+                    continue;
+                }
+
+                if ($fd instanceof DataObject\ClassDefinition\Data\DerivedValueInterface
+                    && $fd->isValueDerived()
+                    && (!$fd->getMandatory() || $this->getOmitMandatoryCheck())) {
+                    // a derived value (e.g. a reverse relation, the read-only mirror of a relation stored on
+                    // the owning objects) is not stored on this object; reading it can load every owning
+                    // object, only to validate objects that are not part of this save. Only a mandatory one
+                    // that is checked needs its value.
+                    continue;
                 }
 
                 $getter = 'get' . ucfirst($fd->getName());
@@ -127,7 +168,7 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
                     // widening it can only skip a check a default is about to satisfy.
                     $valueIsEmpty = empty($value) || $fd->isEmpty($value);
 
-                    if (!$omitMandatoryCheck && $valueIsEmpty && !$isUpdate && self::fieldHasApplicableDefault($fd)) {
+                    if (!$omitMandatoryCheck && $valueIsEmpty && !$isUpdate && $fd->hasApplicableDefaultValue($this)) {
                         $omitMandatoryCheck = true;
                     }
 
@@ -141,19 +182,18 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
                         if ($this->getClass()->getAllowInherit() && $fd->supportsInheritance() && $fd->isEmpty($value)) {
                             //try again with parent data when inheritance is activated
                             try {
-                                $getInheritedValues = DataObject::doGetInheritedValues();
-                                DataObject::setGetInheritedValues(true);
-
-                                $value = $this->$getter();
-                                $fd->checkValidity($value, $omitMandatoryCheck, $params);
-
-                                DataObject::setGetInheritedValues($getInheritedValues);
+                                DataObject\Service::useInheritedValues(
+                                    true,
+                                    fn () => $fd->checkValidity($this->$getter(), $omitMandatoryCheck, $params)
+                                );
                             } catch (Exception $e) {
                                 if (!$e instanceof Model\Element\ValidationException) {
                                     throw $e;
                                 }
-                                $exceptionClass = get_class($e);
-                                $newException = new $exceptionClass($e->getMessage() . ' fieldname=' . $fd->getName(), $e->getCode(), $e->getPrevious());
+                                $newException = StructuredValidationException::copyWithMessage(
+                                    $e,
+                                    $e->getMessage() . ' fieldname=' . $fd->getName()
+                                );
                                 $newException->setSubItems($e->getSubItems());
 
                                 throw $newException;
@@ -164,6 +204,7 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
                     }
                 }
             } catch (Model\Element\ValidationException $ve) {
+                $failedFields[$ve] = $fd;
                 $validationExceptions[] = $ve;
             }
         }
@@ -186,7 +227,7 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
             }
             $message .= implode($preUpdateEvent->getArgument('separator'), $errors);
 
-            throw new Model\Element\ValidationException($message);
+            throw $this->createAggregatedValidationException($message, $validationExceptions, $failedFields);
         }
 
         $isDirtyDetectionDisabled = self::isDirtyDetectionDisabled();
@@ -206,7 +247,8 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
 
             // scheduled tasks are saved in $this->saveVersion();
 
-            $this->saveVersion(false, false, $params['versionNote'] ?? null);
+            // only `existingVersion` is passed on, the versioning events keep their arguments
+            $this->saveVersion(false, false, $params['versionNote'] ?? null, false, array_intersect_key($params, ['existingVersion' => true]));
             $this->saveChildData();
         } finally {
             self::setDisableDirtyDetection($isDirtyDetectionDisabled);
@@ -214,43 +256,30 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
     }
 
     /**
-     * Decides whether a mandatory field has a configured default that will
-     * actually be applied when a new object is created with that field left
-     * empty - and so whether the mandatory check can be skipped for it.
+     * Builds the exception thrown by update() from the (possibly listener-modified) list of validation exceptions.
+     * Each one becomes a violation, named after the field it was caught for. An exception a listener added or
+     * replaced was not caught for a field, so its violation has none.
      *
-     * The condition is deliberately a *superset* of the one this replaced:
-     * every default that qualified before still qualifies. It only adds the
-     * cases PHP's empty() got wrong, so no configuration that saved
-     * successfully before can start failing here.
+     * @param Model\Element\ValidationException[] $validationExceptions
+     * @param SplObjectStorage<Model\Element\ValidationException, ClassDefinition\Data> $failedFields
      */
-    private static function fieldHasApplicableDefault(DataObject\ClassDefinition\Data $fd): bool
-    {
-        if (method_exists($fd, 'getDefaultValueGenerator') && $fd->getDefaultValueGenerator() !== '') {
-            return true;
+    private function createAggregatedValidationException(
+        string $message,
+        array $validationExceptions,
+        SplObjectStorage $failedFields
+    ): StructuredValidationException {
+        $aggregatedException = new StructuredValidationException($message);
+
+        foreach ($validationExceptions as $validationException) {
+            $violation = StructuredValidationException::from($validationException);
+            if ($failedFields->contains($validationException)) {
+                $fieldDefinition = $failedFields[$validationException];
+                $violation->setField($fieldDefinition->getName(), $fieldDefinition->getTitle());
+            }
+            $aggregatedException->addViolations($violation);
         }
 
-        if (!method_exists($fd, 'getDefaultValue')) {
-            return false;
-        }
-
-        $defaultValue = $fd->getDefaultValue();
-
-        // pre-existing behaviour: any truthy configured default qualifies
-        if (!empty($defaultValue)) {
-            return true;
-        }
-
-        // Compound quantity-value fields (QuantityValue, InputQuantityValue) resolve their
-        // default from a value *and* a unit, and their isEmpty() only understands the value
-        // object, not the configured scalar - so a falsy-but-configured scalar is paired with
-        // the unit instead. The unit check mirrors doGetDefaultValue()'s own truthy check, so
-        // an empty-string unit (which it treats as "no unit") agrees here.
-        if (method_exists($fd, 'getDefaultUnit')) {
-            return $defaultValue !== null && (bool) $fd->getDefaultUnit();
-        }
-
-        // the fix: a type-aware emptiness check, so a default of 0 / false / '0' qualifies
-        return !$fd->isEmpty($defaultValue);
+        return $aggregatedException;
     }
 
     private function saveChildData(): void
@@ -262,9 +291,13 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
 
     protected function doDelete(): void
     {
-        // Dispatch Symfony Message Bus to delete versions
+        // Dispatch Symfony Message Bus to delete versions, bounded to the currently existing ones
         Pimcore::getContainer()->get('messenger.bus.pimcore-core')->dispatch(
-            new VersionDeleteMessage(Model\Element\Service::getElementType($this), $this->getId())
+            new VersionDeleteMessage(
+                Model\Element\Service::getElementType($this),
+                $this->getId(),
+                Model\Version::getHighestIdForElement(Model\Element\Service::getElementType($this), $this->getId(), true) ?? 0
+            )
         );
 
         $this->getDao()->deleteAllTasks();
@@ -277,6 +310,8 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
      * it is false when the method is called by $this->update()
      *
      * @param string|null $versionNote version note
+     * @param array $parameters custom arguments passed on to the versioning events; `existingVersion` (Model\Version, internal)
+     *                          writes the version data into that version instead of creating a new one
      *
      */
     public function saveVersion(bool $setModificationDate = true, bool $saveOnlyVersion = true, ?string $versionNote = null, bool $isAutoSave = false, array $parameters = []): ?Model\Version
@@ -286,6 +321,7 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
             'isAutoSave' => $isAutoSave,
         ];
         $eventParameters = array_merge($parameters, $coreParameters);
+        $existingVersion = $this->resolveExistingVersionParameter($parameters);
 
         try {
             if ($setModificationDate) {
@@ -306,13 +342,15 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
 
             // only create a new version if there is at least 1 allowed
             // or if saveVersion() was called directly (it's a newer version of the object)
+            // with an existing version that version is written into, no version is added
             $objectsConfig = SystemSettingsConfig::get()['objects'];
             if ((is_null($objectsConfig['versions']['days'] ?? null) && is_null($objectsConfig['versions']['steps'] ?? null))
                 || (!empty($objectsConfig['versions']['steps']))
                 || !empty($objectsConfig['versions']['days'])
-                || $setModificationDate) {
+                || $setModificationDate
+                || $existingVersion !== null) {
                 $saveStackTrace = !($objectsConfig['versions']['disable_stack_trace'] ?? false);
-                $version = $this->doSaveVersion($versionNote, $saveOnlyVersion, $saveStackTrace, $isAutoSave);
+                $version = $this->doSaveVersion($versionNote, $saveOnlyVersion, $saveStackTrace, $isAutoSave, $existingVersion);
             }
 
             // hook should be also called if "save only new version" is selected
@@ -354,6 +392,30 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
         return $this;
     }
 
+    /**
+     * @internal
+     *
+     * @return array<string, scalar|array|null>|null
+     */
+    public function __getCalculatedValueSnapshot(): ?array
+    {
+        return $this->__calculatedValueSnapshot;
+    }
+
+    /**
+     * @internal
+     *
+     * @param array<string, scalar|array|null>|null $calculatedValueSnapshot
+     *
+     * @return $this
+     */
+    public function __setCalculatedValueSnapshot(?array $calculatedValueSnapshot): static
+    {
+        $this->__calculatedValueSnapshot = $calculatedValueSnapshot;
+
+        return $this;
+    }
+
     public function getValueForFieldName(string $key): mixed
     {
         if (isset($this->$key)) {
@@ -391,6 +453,21 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
 
         // check in fields
         foreach ($this->getClass()->getFieldDefinitions() as $field) {
+            if ($field instanceof DataObject\ClassDefinition\Data\CalculatedValue) {
+                // a calculated value cannot own a dependency: it is computed on read and
+                // CalculatedValue does not override Data::resolveDependencies(), which returns
+                // an empty array. Calling the getter would run the calculator for nothing.
+                continue;
+            }
+
+            if ($field instanceof DataObject\ClassDefinition\Data\ReverseObjectRelation) {
+                // a reverse relation cannot own a dependency either - the relation is recorded
+                // on the owning object - and ReverseObjectRelation::resolveDependencies() says so
+                // by returning an empty array. Its getter is never memoised, so calling it here
+                // would query the relation table and load every owning object for nothing.
+                continue;
+            }
+
             $key = $field->getName();
             $getter = 'get' . ucfirst($key);
             $dependencies[] = $field->resolveDependencies($this->$getter());
@@ -661,6 +738,10 @@ class Concrete extends DataObject implements LazyLoadedFieldsInterface
      */
     public function save(array $parameters = []): static
     {
+        // an object restored from a version becomes a live object again when it is saved, so calculated fields
+        // have to be computed freshly from now on - before the pre-save events, so listeners already see that
+        $this->__calculatedValueSnapshot = null;
+
         $isDirtyDetectionDisabled = DataObject::isDirtyDetectionDisabled();
 
         // if the class is newer then better disable the dirty detection. This should fix issues with the query table if
